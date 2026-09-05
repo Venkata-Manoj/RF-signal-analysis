@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+output/
+sample_data/*.iq
+sample_data/*.wav
+sample_data/*.npy
+*.egg-info/
