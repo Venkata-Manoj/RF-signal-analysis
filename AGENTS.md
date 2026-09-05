@@ -1,7 +1,7 @@
 # AGENTS.md — RF Signal Analysis Workbench MVP
 
 ## Status / source of truth
-- Repo is greenfield: `info.md` (full PRD + build plan + starter code + tests) plus `.opencode/skills/` (ui-ux-pro-max). No app code, no git, no manifests yet.
+- Repo has committed skeleton (Milestone 1 done: `4874305`): manifests, `src/rf_analyzer` stubs, `scripts/` stubs, `tests/unit/test_setup.py` passing. No MVP logic yet — implement per order below.
 - `info.md` is authoritative for scope, schemas, and starter code. Don't re-derive architecture — implement `info.md` §9–§12 in order (§34): skeleton → `requirements.txt` → `core/io.py` → `scripts/generate_test_data.py` → `core/dsp.py` → `core/demod.py` → `core/correlator.py` → `pipeline.py` → tests → GUI shell.
 - Target layout (§10): `src/rf_analyzer/{config.py,pipeline.py,core/{io,dsp,demod,correlator,report}.py,gui/main_window.py}`, `scripts/{generate_test_data,run_app,run_pipeline,verify_mvp}.py`, `tests/{unit,integration}`, `sample_data/`, `output/`.
 
