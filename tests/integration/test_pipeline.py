@@ -130,3 +130,76 @@ def test_unsupported_file(tmp_path):
     # Assert: graceful failure populates errors (never raises).
     assert "errors" in report
     assert len(report["errors"]) > 0
+
+
+def test_bits_preview_present():
+    # Arrange: clean synthetic BPSK capture (seeded, see generate_test_data.py).
+    iq_path = SAMPLE_DATA / "bpsk.iq"
+    if not iq_path.exists():
+        pytest.skip(f"missing synthetic data: {iq_path} (run generate_test_data.py)")
+    request = {
+        "file_path": str(iq_path),
+        "sample_rate": 100000,
+        "iq_format": "complex64",
+        "modulation": "BPSK",
+        "sync_word": "0x1ACFFC1D",
+    }
+
+    # Act
+    report = analyze_file(request)
+
+    # Assert: demodulation exposes a real bit preview, not just counts.
+    assert report["errors"] == []
+    dem = report["demodulation"]
+    assert "bits_preview" in dem, "demodulation.bits_preview missing (regression)"
+    preview = dem["bits_preview"]
+    assert isinstance(preview, list), f"bits_preview must be list, got {type(preview)}"
+    num_bits = int(dem["num_bits"])
+    expected_len = min(2048, num_bits)
+    assert len(preview) == expected_len, (
+        f"bits_preview length {len(preview)} != min(2048, num_bits)={expected_len}"
+    )
+    assert all(int(b) in (0, 1) for b in preview), "bits_preview must contain only 0/1"
+
+    # Assert: preview matches direct demod of the same file (first N exactly).
+    from rf_analyzer.core.demod import demod_bpsk
+    from rf_analyzer.core.io import load_iq
+
+    samples = load_iq(str(iq_path), dtype="complex64")
+    expected = np.asarray(demod_bpsk(samples), dtype=np.uint8)
+    assert np.array_equal(
+        np.asarray(preview, dtype=np.uint8), expected[: len(preview)]
+    ), "bits_preview must equal demod_bpsk(load_iq(...)) first N exactly"
+
+
+def test_modulation_param_changes_result():
+    # Arrange: same capture analyzed under two modulation selections.
+    iq_path = SAMPLE_DATA / "bpsk.iq"
+    if not iq_path.exists():
+        pytest.skip(f"missing synthetic data: {iq_path} (run generate_test_data.py)")
+    base = {
+        "file_path": str(iq_path),
+        "sample_rate": 100000,
+        "iq_format": "complex64",
+        "sync_word": "0x1ACFFC1D",
+    }
+
+    # Act
+    bpsk_report = analyze_file({**base, "modulation": "BPSK"})
+    qpsk_report = analyze_file({**base, "modulation": "QPSK"})
+
+    # Assert: modulation param is honored (no hardcoded demod path).
+    assert bpsk_report["errors"] == []
+    assert qpsk_report["errors"] == []
+    bpsk_mode = bpsk_report["demodulation"]["mode"]
+    qpsk_mode = qpsk_report["demodulation"]["mode"]
+    assert bpsk_mode == "BPSK", f"expected BPSK mode, got {bpsk_mode!r}"
+    assert qpsk_mode == "QPSK", f"expected QPSK mode, got {qpsk_mode!r}"
+    assert bpsk_mode != qpsk_mode, "modulation param must change demodulation.mode"
+
+    # Assert: QPSK yields ~2x bits of BPSK for the same samples.
+    bpsk_n = int(bpsk_report["demodulation"]["num_bits"])
+    qpsk_n = int(qpsk_report["demodulation"]["num_bits"])
+    assert bpsk_n > 0 and qpsk_n > 0
+    ratio = qpsk_n / float(bpsk_n)
+    assert 1.9 <= ratio <= 2.1, f"QPSK/BPSK num_bits ratio {ratio:.3f} not ~2x"

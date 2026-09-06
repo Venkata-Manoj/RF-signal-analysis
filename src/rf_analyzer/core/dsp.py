@@ -92,26 +92,32 @@ def compute_waterfall(
     samples = np.asarray(samples)
     if samples.size == 0:
         raise ValueError("Not enough samples for waterfall computation.")
+    if len(samples) < 16:
+        raise ValueError("Not enough samples for waterfall computation.")
 
-    step = max(1, int(nfft * (1.0 - overlap)))
-    num_segments = max(1, (len(samples) - nfft) // step + 1)
+    effective_nfft = min(int(nfft), len(samples))
+    if effective_nfft <= 0:
+        raise ValueError("Not enough samples for waterfall computation.")
 
-    window = np.hanning(nfft)
-    waterfall = np.zeros((num_segments, nfft), dtype=np.float32)
+    step = max(1, int(effective_nfft * (1.0 - overlap)))
+    num_segments = max(1, (len(samples) - effective_nfft) // step + 1)
+
+    window = np.hanning(effective_nfft)
+    waterfall = np.zeros((num_segments, effective_nfft), dtype=np.float32)
 
     for i in range(num_segments):
         start = i * step
-        end = start + nfft
+        end = start + effective_nfft
 
         if end > len(samples):
             break
 
         segment = samples[start:end] * window
-        fft_vals = np.fft.fftshift(np.fft.fft(segment, n=nfft))
+        fft_vals = np.fft.fftshift(np.fft.fft(segment, n=effective_nfft))
         psd = np.abs(fft_vals) ** 2
         waterfall[i, :] = 10.0 * np.log10(psd + 1e-12)
 
-    freqs = np.fft.fftshift(np.fft.fftfreq(nfft, d=1.0 / sample_rate))
+    freqs = np.fft.fftshift(np.fft.fftfreq(effective_nfft, d=1.0 / sample_rate))
     times = np.arange(num_segments) * (step / sample_rate)
 
     return freqs, times, waterfall
@@ -137,7 +143,10 @@ def compute_eye(samples: np.ndarray, samples_per_symbol: int = 8) -> np.ndarray:
     trace_len = int(samples_per_symbol * 2)
     step = int(samples_per_symbol)
     if len(samples) < trace_len:
-        raise ValueError("Not enough samples for eye diagram computation.")
+        # Too few samples for a full 2-symbol trace: return a single
+        # trace of whatever is available (never crash, never empty, no
+        # tiling/repeating). Caller must handle short traces.
+        return np.asarray(samples).reshape(1, -1)
 
     num_traces = (len(samples) - trace_len) // step + 1
     if num_traces <= 0:

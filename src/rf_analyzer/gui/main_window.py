@@ -82,6 +82,13 @@ QPushButton:disabled { background-color: #1A1E2F; color: #94A3B8; }
 QPushButton#run_btn { background-color: #16A34A; color: #0F172A; font-weight: 700; border: none; }
 QPushButton#run_btn:hover { background-color: #22C55E; }
 QPushButton#run_btn:disabled { background-color: #1A1E2F; color: #94A3B8; }
+QPushButton#run_btn[stale="true"] { border: 2px solid #EA580C; background-color: #16A34A; }
+QLabel#stale_badge {
+    background-color: #EA580C; color: #000000;
+    border: 1px solid #EA580C; border-radius: 4px; padding: 3px 8px;
+    font-weight: 700;
+}
+QLabel#last_analysis_label { color: #94A3B8; font-size: 11px; }
 QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox {
     background-color: #1A1E2F; color: #F8FAFC;
     border: 1px solid #334155; border-radius: 4px; padding: 5px;
@@ -167,6 +174,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.last_bits: np.ndarray | None = None
         self._display_samples: np.ndarray | None = None
         self._display_rate: float | None = None
+        # Last successful Run request (for STALE tracking + "Last analysis" label).
+        self._last_request: dict | None = None
+        self._suppress_param_signals: bool = False
 
         pg.setConfigOptions(background="#020617", foreground="#F8FAFC", antialias=True)
 
@@ -262,14 +272,19 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.center_freq_spin.setValue(0.0)
         self.center_freq_spin.setDecimals(0)
         self.center_freq_spin.setSuffix(" Hz")
-        self.center_freq_spin.setToolTip("Receiver center frequency (metadata only)")
+        self.center_freq_spin.setToolTip(
+            "Receiver center frequency (metadata only — recorded in report, "
+            "not used for estimation)"
+        )
         params_form.addRow("Center freq:", self.center_freq_spin)
 
         self.iq_format_combo = QComboBox()
         self.iq_format_combo.setObjectName("iq_format_combo")
         self.iq_format_combo.addItems(["complex64", "int16", "uint8", "auto"])
         self.iq_format_combo.setCurrentText("complex64")
-        self.iq_format_combo.setToolTip("Raw .iq sample format (ignored for .wav)")
+        self.iq_format_combo.setToolTip(
+            "Raw .iq sample format (ignored for .wav — rate comes from file)"
+        )
         params_form.addRow("IQ format:", self.iq_format_combo)
 
         self.mod_combo = QComboBox()
@@ -385,6 +400,23 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
         results_group = QGroupBox("Parameters / Results")
         results_layout = QVBoxLayout(results_group)
+        # Active-params feedback: what the last Run actually used.
+        self.last_analysis_label = QLabel("Last analysis: — (no run yet)")
+        self.last_analysis_label.setObjectName("last_analysis_label")
+        self.last_analysis_label.setWordWrap(True)
+        self.last_analysis_label.setToolTip(
+            "Parameters used by the last Run vs current UI values"
+        )
+        results_layout.addWidget(self.last_analysis_label)
+        # STALE badge: accent fill (--color-accent #EA580C) when UI differs
+        # from the last Run. Hidden when results are fresh.
+        self.stale_badge = QLabel("STALE — params changed, Run to refresh")
+        self.stale_badge.setObjectName("stale_badge")
+        self.stale_badge.setToolTip(
+            "Current inputs differ from the last analysis; press Run Analysis"
+        )
+        self.stale_badge.setVisible(False)
+        results_layout.addWidget(self.stale_badge)
         self.results_table = QTableWidget(0, 2)
         self.results_table.setObjectName("results_table")
         self.results_table.setHorizontalHeaderLabels(["Parameter", "Value"])
@@ -415,6 +447,20 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         splitter.setStretchFactor(2, 0)
         splitter.setSizes([290, 800, 330])
 
+        # Live param reactivity: any input change marks results STALE and
+        # refreshes the display-only time+spectrum preview (no estimation).
+        # Full DSP estimation still runs only on Run Analysis.
+        try:
+            self.sample_rate_spin.valueChanged.connect(self._on_params_changed)
+            self.center_freq_spin.valueChanged.connect(self._on_params_changed)
+            self.iq_format_combo.currentTextChanged.connect(
+                self._on_params_changed
+            )
+            self.mod_combo.currentTextChanged.connect(self._on_params_changed)
+            self.sync_word_edit.textChanged.connect(self._on_params_changed)
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
@@ -424,7 +470,17 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.log_console.appendPlainText(str(message))
         except Exception:
             pass
-        print(str(message))
+        # Windows cp1252 consoles cannot encode some unicode (e.g. arrows);
+        # never let a log line crash param-change/live-refresh handlers.
+        try:
+            print(str(message))
+        except UnicodeEncodeError:
+            try:
+                print(
+                    str(message).encode("ascii", "replace").decode("ascii")
+                )
+            except Exception:
+                pass
 
     def _show_about(self) -> None:
         _notify(
@@ -452,6 +508,132 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             "modulation": self._modulation_request_value(),
             "sync_word": self.sync_word_edit.text().strip(),
         }
+
+    def _current_ui_request(self) -> dict | None:
+        """Best-effort snapshot of current UI inputs (None when no file)."""
+        try:
+            if self.current_file is None:
+                return None
+            return self._build_request()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _request_summary(req: dict | None) -> str:
+        if not req:
+            return "—"
+        try:
+            name = Path(str(req.get("file_path", "—"))).name
+        except Exception:
+            name = str(req.get("file_path", "—"))
+        return (
+            f"{name}|rate={req.get('sample_rate')}|fmt={req.get('iq_format')}|"
+            f"mod={req.get('modulation')}|sync={req.get('sync_word')}"
+        )
+
+    def _update_last_analysis_label(self) -> None:
+        """Show last-Run params vs current UI values (active-params label)."""
+        try:
+            if self._last_request is None:
+                self.last_analysis_label.setText(
+                    "Last analysis: — (no run yet)"
+                )
+                return
+            last = self._request_summary(self._last_request)
+            cur = self._request_summary(self._current_ui_request())
+            self.last_analysis_label.setText(
+                f"Last analysis: {last}\nCurrent UI: {cur}"
+            )
+        except Exception:
+            pass
+
+    def _set_stale(self, stale: bool) -> None:
+        """Show/hide STALE badge + Run highlight (accent #EA580C)."""
+        try:
+            self.stale_badge.setVisible(bool(stale))
+            # Also toggle hidden state explicitly for offscreen visibility checks.
+            self.stale_badge.setHidden(not bool(stale))
+            self.run_btn.setProperty("stale", bool(stale))
+            # Re-polish so QSS [stale="true"] applies immediately.
+            try:
+                self.run_btn.style().unpolish(self.run_btn)
+                self.run_btn.style().polish(self.run_btn)
+            except Exception:
+                pass
+            if stale:
+                self.run_btn.setToolTip(
+                    "Parameters changed — press to re-run full pipeline (Ctrl+R)"
+                )
+            else:
+                self.run_btn.setToolTip(
+                    "Run full pipeline on the open file (Ctrl+R)"
+                )
+        except Exception:
+            pass
+
+    def _on_params_changed(self, *args) -> None:
+        """Live reactivity: log change, flag STALE, refresh display preview.
+
+        Display-only refresh (time + spectrum) so the spectrum x-axis
+        responds to the sample-rate spin immediately. Full DSP estimation
+        still runs only on Run Analysis. Never duplicates pipeline logic.
+        """
+        if getattr(self, "_suppress_param_signals", False):
+            return
+        try:
+            sender = self.sender()
+            name = "param"
+            try:
+                if sender is not None:
+                    name = str(sender.objectName() or type(sender).__name__)
+            except Exception:
+                pass
+            cur = self._current_ui_request()
+            if cur is None:
+                return
+            if self._last_request is None:
+                # No baseline yet — just live-refresh the preview.
+                self._update_last_analysis_label()
+            else:
+                # Diff keys for an honest log line.
+                diffs: list[str] = []
+                for k in (
+                    "file_path",
+                    "sample_rate",
+                    "center_frequency",
+                    "iq_format",
+                    "modulation",
+                    "sync_word",
+                ):
+                    if str(cur.get(k)) != str(self._last_request.get(k)):
+                        diffs.append(
+                            f"{k}: {self._last_request.get(k)} -> {cur.get(k)}"
+                        )
+                if diffs:
+                    self.log(
+                        f"Param changed ({name}): "
+                        + "; ".join(diffs)
+                        + " — results STALE; Run to refresh."
+                    )
+                    self._set_stale(True)
+                else:
+                    self._set_stale(False)
+                self._update_last_analysis_label()
+            # Live display-only refresh (no estimation).
+            if self.current_file is not None:
+                try:
+                    samples, rate = self._load_display_samples(
+                        _from_param_change=True
+                    )
+                    if samples is not None and len(samples) > 0:
+                        if rate is None or rate <= 0:
+                            rate = float(self.sample_rate_spin.value() or 1.0)
+                        self._plot_time(samples)
+                        self._plot_spectrum(samples, rate)
+                except Exception as exc:
+                    self.log(f"WARN: live preview refresh failed: {exc}")
+        except Exception as exc:
+            self.log(f"WARN: param-change handler failed: {exc}")
 
     # ------------------------------------------------------------------ #
     # Slots
@@ -489,8 +671,36 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.file_info_label.setText(
                 f"{self.current_file.name}\n{size:,} bytes ({suffix})"
             )
+            # IQ format is irrelevant for .wav (rate comes from file header).
+            try:
+                if suffix == ".wav":
+                    self.iq_format_combo.setEnabled(False)
+                    self.iq_format_combo.setToolTip(
+                        "Ignored for .wav — sample rate comes from file header"
+                    )
+                else:
+                    self.iq_format_combo.setEnabled(True)
+                    self.iq_format_combo.setToolTip(
+                        "Raw .iq sample format (required for .iq)"
+                    )
+            except Exception:
+                pass
             self.log(f"Opened {self.current_file} ({size:,} bytes).")
             self._preview_file()
+            # A newly opened file differs from any prior Run → mark STALE.
+            try:
+                if self._last_request is not None:
+                    if str(self._last_request.get("file_path")) != str(
+                        self.current_file
+                    ):
+                        self.log(
+                            "File changed since last analysis — results STALE; "
+                            "Run to refresh."
+                        )
+                        self._set_stale(True)
+                self._update_last_analysis_label()
+            except Exception:
+                pass
         except Exception as exc:  # never crash the GUI on open
             self.log(f"ERROR opening file: {exc}\n{traceback.format_exc()}")
             _notify(self, "critical", "Open failed", f"Could not open file:\n{exc}")
@@ -504,6 +714,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             _notify(self, "warning", "No file", str(exc))
             return
 
+        # Full param feedback: log exactly what this Run uses. center_freq
+        # is metadata-only (recorded in report, not used for estimation).
+        self.log(f"Run request: {request}")
+        self.log(
+            "Note: center_frequency is metadata-only "
+            f"({request.get('center_frequency')} Hz recorded, not estimated)."
+        )
         self.log(f"Running analysis on {request['file_path']} …")
         self.run_btn.setEnabled(False)
         try:
@@ -532,8 +749,33 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
         try:
             self.last_report = report
-            # Pipeline MVP returns counts, not raw bits; keep placeholder.
-            self.last_bits = None
+            # Real bits come ONLY from pipeline demodulation preview.
+            # Never call demod_* from the GUI, never synthesize bits.
+            try:
+                dem = (report or {}).get("demodulation", {}) or {}
+                preview = dem.get("bits_preview", None)
+                if preview is not None and len(preview) > 0:
+                    self.last_bits = np.asarray(preview, dtype=np.uint8)
+                    self.log(
+                        f"Bitstream preview: {len(self.last_bits):,} bits "
+                        f"(mode={dem.get('mode', '?')})."
+                    )
+                else:
+                    self.last_bits = None
+                    self.log(
+                        "WARN: report has no demodulation.bits_preview — "
+                        "showing counts only, no bit waveform."
+                    )
+            except Exception as exc:
+                self.last_bits = None
+                self.log(f"WARN: could not read bits_preview: {exc}")
+            # This Run is now the fresh baseline for STALE tracking.
+            try:
+                self._last_request = dict(request)
+            except Exception:
+                self._last_request = request
+            self._set_stale(False)
+            self._update_last_analysis_label()
             errors = report.get("errors", []) or []
             if errors:
                 self.log(f"Analysis completed with errors: {errors}")
@@ -616,17 +858,28 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     # Display
     # ------------------------------------------------------------------ #
     def _preview_file(self) -> None:
-        """Lightweight time-domain preview right after open (no estimation)."""
+        """Lightweight preview right after open (no estimation).
+
+        Plots time + spectrum + constellation so switching files visibly
+        changes tabs before Run. Full estimation still runs only on Run.
+        """
         try:
             samples, rate = self._load_display_samples()
-            if samples is None:
+            if samples is None or len(samples) == 0:
                 return
+            if rate is None or rate <= 0:
+                rate = float(self.sample_rate_spin.value() or 1.0)
+            # Each _plot_* starts with .clear() so stale traces never linger.
             self._plot_time(samples)
+            self._plot_spectrum(samples, rate)
+            self._plot_constellation(samples)
             self.log(f"Preview: {len(samples):,} samples @ {rate} Hz.")
         except Exception as exc:
             self.log(f"WARN: preview failed: {exc}")
 
-    def _load_display_samples(self) -> tuple[np.ndarray | None, float | None]:
+    def _load_display_samples(
+        self, _from_param_change: bool = False
+    ) -> tuple[np.ndarray | None, float | None]:
         """Load samples for visualization only. Estimation stays in pipeline."""
         if self.current_file is None:
             return None, None
@@ -634,14 +887,40 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             from rf_analyzer.core.io import load_iq, load_wav
 
             suffix = self.current_file.suffix.lower()
+            # Keep IQ-format control in sync with file type every load.
+            try:
+                if suffix == ".wav":
+                    if self.iq_format_combo.isEnabled():
+                        self.iq_format_combo.setEnabled(False)
+                    self.iq_format_combo.setToolTip(
+                        "Ignored for .wav — sample rate comes from file header"
+                    )
+                else:
+                    if not self.iq_format_combo.isEnabled():
+                        self.iq_format_combo.setEnabled(True)
+                    self.iq_format_combo.setToolTip(
+                        "Raw .iq sample format (required for .iq)"
+                    )
+            except Exception:
+                pass
             if suffix == ".wav":
                 samples, rate = load_wav(str(self.current_file))
                 self._display_rate = float(rate)
                 # Reflect file rate in the UI (wav carries metadata).
+                # Block signals so the programmatic setValue does not
+                # re-enter _on_params_changed → infinite live-refresh loop.
                 try:
-                    self.sample_rate_spin.setValue(float(rate))
+                    if float(self.sample_rate_spin.value()) != float(rate):
+                        self._suppress_param_signals = True
+                        try:
+                            self.sample_rate_spin.setValue(float(rate))
+                        finally:
+                            self._suppress_param_signals = False
                 except Exception:
-                    pass
+                    try:
+                        self._suppress_param_signals = False
+                    except Exception:
+                        pass
             else:
                 fmt = self.iq_format_combo.currentText().strip()
                 if fmt == "auto":
@@ -708,11 +987,26 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         if rate is None or rate <= 0:
             rate = float(self.sample_rate_spin.value() or 1.0)
         try:
+            # Every plot starts with .clear()/setImage so runs never overlay.
             self._plot_time(samples)
             self._plot_spectrum(samples, rate)
             self._plot_waterfall(samples, rate)
             self._plot_constellation(samples)
-            self._plot_eye(samples)
+            # Eye overlay depends on symbol density: prefer pipeline hint
+            # report["display"]["samples_per_symbol"], else demod mode.
+            try:
+                disp = (report or {}).get("display", {}) or {}
+                sps = disp.get("samples_per_symbol", None)
+                mode = ((report or {}).get("demodulation", {}) or {}).get(
+                    "mode", ""
+                )
+                if sps is None:
+                    sps = 1 if str(mode).upper() in ("BPSK", "QPSK") else 8
+                sps = int(sps)
+            except Exception:
+                sps = 8
+                mode = ""
+            self._plot_eye(samples, samples_per_symbol=sps)
             self._update_bitstream_tab(report)
         except Exception as exc:
             self.log(f"WARN: plot update partially failed: {exc}")
@@ -756,6 +1050,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             try:
                 from rf_analyzer.core import dsp as _dsp
 
+                # Adaptive core DSP (handles short/long captures); GUI only
+                # caps the display size for responsiveness.
                 freqs, _times, wf = _dsp.compute_waterfall(samples, rate)
                 wf = np.asarray(wf, dtype=float)
             except Exception:
@@ -769,12 +1065,14 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     wf[i] = 10.0 * np.log10(
                         np.abs(np.fft.fftshift(np.fft.fft(seg))) ** 2 + 1e-12
                     )
-            # Cap columns for display; ImageView handles large frames poorly.
+            # Display caps: max 256 rows x 512 cols; ImageView is refreshed
+            # via setImage every run so tabs visibly change per file/params.
             if wf.shape[1] > 512:
                 wf = wf[:, :: wf.shape[1] // 512 + 1]
             if wf.shape[0] > 256:
                 wf = wf[:: wf.shape[0] // 256 + 1, :]
             self.waterfall_view.setImage(wf.T, autoLevels=True, autoRange=True)
+            self.log(f"Waterfall: {wf.shape[0]} rows x {wf.shape[1]} cols.")
         except Exception as exc:
             self.log(f"WARN: waterfall failed: {exc}")
 
@@ -790,21 +1088,59 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             symbolBrush=(34, 197, 94, 160),
         )
 
-    def _plot_eye(self, samples: np.ndarray) -> None:
+    def _plot_eye(self, samples: np.ndarray, samples_per_symbol: int = 8) -> None:
         self.eye_plot.clear()
         try:
+            sps = int(samples_per_symbol or 8)
+            if sps <= 0:
+                sps = 8
+            flat = np.asarray(samples)
+            if flat.size == 0:
+                self.log("WARN: eye diagram skipped — no samples.")
+                return
+            if sps <= 1:
+                # Honest 1-sps waveform view: overlay I-channel chunks.
+                # No symbol timing exists at 1 sample/symbol, so never fake
+                # a 2-symbol eye — show chunked overlay instead.
+                try:
+                    self.eye_plot.setTitle(
+                        "Eye diagram (I) (1 sps: overlay view)"
+                    )
+                except Exception:
+                    pass
+                real = np.real(flat).astype(float)
+                chunk, ntraces = 32, 40
+                if real.size < chunk:
+                    # Too short: single trace, never crash.
+                    self.eye_plot.plot(
+                        np.arange(real.size),
+                        real,
+                        pen=pg.mkPen("#38BDF8", width=1),
+                    )
+                    return
+                ntraces = min(ntraces, max(1, real.size // chunk))
+                traces = real[: ntraces * chunk].reshape(ntraces, chunk)
+                pen = pg.mkPen("#38BDF8", width=1)
+                for tr in traces[:40]:
+                    self.eye_plot.plot(
+                        np.arange(tr.size), tr.astype(float), pen=pen
+                    )
+                return
+            try:
+                self.eye_plot.setTitle("Eye diagram (I)")
+            except Exception:
+                pass
             try:
                 from rf_analyzer.core import dsp as _dsp
 
-                traces = _dsp.compute_eye(samples)
+                traces = _dsp.compute_eye(flat, samples_per_symbol=sps)
                 traces = np.asarray(traces)
             except Exception:
                 # Display-only fallback: overlay I-channel segments.
-                sps, ntraces = 16, 40
-                real = np.real(np.asarray(samples, dtype=np.complex64))
+                real = np.real(np.asarray(flat, dtype=np.complex64))
                 if real.size < sps * 2:
                     return  # too few samples for an eye — leave tab empty, no crash
-                ntraces = min(ntraces, max(1, real.size // (sps * 2)))
+                ntraces = min(40, max(1, real.size // (sps * 2)))
                 traces = real[: ntraces * sps * 2].reshape(ntraces, sps * 2)
             pen = pg.mkPen("#38BDF8", width=1)
             for tr in traces[:40]:
@@ -815,8 +1151,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     def _update_bitstream_tab(self, report: dict) -> None:
         self.bitstream_plot.clear()
-        dem = (report or {}).get("demodulation", {})
-        corr = (report or {}).get("correlation", {})
+        dem = (report or {}).get("demodulation", {}) or {}
+        corr = (report or {}).get("correlation", {}) or {}
         nbits = dem.get("num_bits", 0) or 0
         if self.last_bits is not None and len(self.last_bits) > 0:
             bits = np.asarray(self.last_bits, dtype=np.uint8)[:512]
@@ -836,14 +1172,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 f"{nbits} bits (first {min(256, len(self.last_bits))} shown):\n{preview}"
             )
         else:
+            # Honest empty state: never synthesize a fake wave with
+            # fixed-seed random. Counts/mode come from the pipeline report.
             self.bitstream_text.setPlainText(
-                f"Extracted {nbits} bits (mode={dem.get('mode', '?')}).\n"
+                f"No bits returned (mode={dem.get('mode', '?')}, "
+                f"num_bits={nbits}).\n"
                 f"Sync={corr.get('sync_word', '?')} offset={corr.get('header_offset', '?')} "
                 f"score={corr.get('score', '?')}.\n"
-                "Raw bit vector is held by the pipeline; counts shown in results table."
+                "Pipeline returned no bits_preview; re-run analysis."
             )
-            if nbits:
-                # Placeholder step so the tab is never blank after a run.
-                rng = np.random.default_rng(0)
-                demo = rng.integers(0, 2, size=min(64, int(nbits))).astype(float)
-                self.bitstream_plot.plot(demo, pen=pg.mkPen("#334155", width=1))
+            # Plot stays cleared (blank) so stale/fake traces never linger.

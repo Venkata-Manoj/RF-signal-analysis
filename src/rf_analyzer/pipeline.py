@@ -72,6 +72,7 @@ def _error_report(file_name: str, warnings: list, message: str) -> dict:
         "correlation": {},
         "fec": {},
         "interleaving": {},
+        "display": {},
         "warnings": list(warnings),
         "errors": [message],
     }
@@ -256,6 +257,7 @@ def analyze_file(request: dict) -> dict:
                 "mode": mode,
                 "num_bits": int(len(bits)),
                 "bitstream_file": None,
+                "bits_preview": [int(b) for b in list(bits[:2048])],
             },
             "correlation": correlation,
             # Candidate-score stubs only: the MVP never claims blind FEC /
@@ -269,6 +271,12 @@ def analyze_file(request: dict) -> dict:
                 "candidate": None,
                 "depth": None,
                 "confidence": 0.0,
+            },
+            # MVP hint for eye diagram: current synthetic generator uses
+            # 1 sample/symbol for BPSK/QPSK/2-FSK.
+            "display": {
+                "samples_per_symbol": 1,
+                "mode": mode,
             },
             "warnings": warnings,
             "errors": errors,
