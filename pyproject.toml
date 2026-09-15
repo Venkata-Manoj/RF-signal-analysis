@@ -1,0 +1,38 @@
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "C", "Q", "N", "UP", "YTT", "ASYNC", "SIM", "TCH", "RUF", "PLW"]
+ignore = [
+    # Defensive error handling in GUI — intentional, never crash the UI.
+    "BLE001",
+    "S110",
+    "S112",
+    # Unused unpacked vars in tests (confidence, alts, freqs) — intentional.
+    "RUF059",
+    # PERF402 list append in loop — GUI widgets, not hot path.
+    "PERF402",
+    # subprocess.run without explicit check — intentional for flow control.
+    "PLW1510",
+    # PyQt6 guarded imports — intentional guard pattern.
+    "E402",
+    # C901: complex functions in GUI — intentional.
+    "C901",
+    # B905: isinstance with tuple — intentional.
+    "B905",
+    # N806/SIM105: pre-existing classifier.py and GUI colormap — intentional.
+    "N806",
+    "SIM105",
+    "SIM102",
+    # F401/RUF003/RUF002: pre-existing scripts and comments — intentional.
+    "F401",
+    "RUF003",
+    "RUF002",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/**" = ["E501"]
+"tests/**" = ["E501"]
+
+[tool.ruff.format]
+docstring-code-format = true

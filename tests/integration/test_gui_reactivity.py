@@ -21,9 +21,15 @@ import numpy as np
 import pytest
 
 QtWidgets = pytest.importorskip("PyQt6.QtWidgets", reason="PyQt6 not installed")
-from PyQt6.QtWidgets import QApplication, QGroupBox, QLabel, QPushButton, QWidget  # noqa: E402
+from PyQt6.QtWidgets import (
+    QApplication,
+    QGroupBox,
+    QLabel,
+    QPushButton,
+    QWidget,
+)
 
-from rf_analyzer.gui.main_window import MainWindow  # noqa: E402
+from rf_analyzer.gui.main_window import MainWindow
 
 SAMPLE_DATA = Path(__file__).resolve().parents[2] / "sample_data"
 BPSK_IQ = SAMPLE_DATA / "bpsk.iq"
@@ -230,18 +236,18 @@ def test_bitstream_shows_real_bits():
 
         # Assert: placeholder is gone and a real 0/1 preview is shown.
         text = window.bitstream_text.toPlainText()
-        assert "Raw bit vector is held" not in text, (
-            "bitstream_text still shows pipeline-held placeholder; must show real bits"
-        )
+        assert (
+            "Raw bit vector is held" not in text
+        ), "bitstream_text still shows pipeline-held placeholder; must show real bits"
         runs = re.findall(r"[01]{32,}", text)
         assert runs, (
             "bitstream_text must contain a 0/1 preview run "
             f"(>=32 chars); got {text[:300]!r}"
         )
         longest = max(len(r) for r in runs)
-        assert longest >= 64, (
-            f"0/1 preview too short ({longest} chars); expected >=64 real bits"
-        )
+        assert (
+            longest >= 64
+        ), f"0/1 preview too short ({longest} chars); expected >=64 real bits"
     finally:
         window.close()
 
@@ -279,3 +285,14 @@ def test_switching_files_changes_plots():
         assert differ, "time_plot data unchanged after switching files (frozen plots)"
     finally:
         window.close()
+
+
+def test_gui_has_qam_and_sampling_est():
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+    window = MainWindow()
+    window.setWindowTitle("RF Signal Analyzer MVP")
+    opts = [window.mod_combo.itemText(i) for i in range(window.mod_combo.count())]
+    assert any("QAM" in o for o in opts), f"QAM not in modulation options: {opts}"
+    window.close()

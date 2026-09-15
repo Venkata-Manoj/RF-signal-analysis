@@ -14,8 +14,7 @@ def hex_to_bits(hex_string: str, bit_length: int | None = None) -> np.ndarray:
     """
     hex_string = hex_string.lower().strip()
 
-    if hex_string.startswith("0x"):
-        hex_string = hex_string[2:]
+    hex_string = hex_string.removeprefix("0x")
 
     value = int(hex_string, 16)
 
@@ -29,11 +28,13 @@ def hex_to_bits(hex_string: str, bit_length: int | None = None) -> np.ndarray:
 def sliding_correlate(
     received_bits: np.ndarray, known_bits: np.ndarray
 ) -> tuple[int, float]:
-    """
-    Simple sliding hard-bit correlation.
+    """Sliding hard-bit correlation (vectorized).
+
+    Uses bipolar cross-correlation via ``np.correlate`` for O(n·m)
+    performance instead of the original O(n²) pure-Python loop.
 
     Returns:
-      best_offset, best_score
+      best_offset, best_score (score in [0, 1])
     """
     received_bits = np.asarray(received_bits, dtype=np.uint8)
     known_bits = np.asarray(known_bits, dtype=np.uint8)
@@ -44,19 +45,17 @@ def sliding_correlate(
     if len(received_bits) < len(known_bits):
         return -1, 0.0
 
-    best_offset = -1
-    best_score = -1.0
-
     known_len = len(known_bits)
 
-    for offset in range(len(received_bits) - known_len + 1):
-        segment = received_bits[offset : offset + known_len]
-        matches = np.sum(segment == known_bits)
-        score = float(matches) / known_len
+    # Convert to bipolar (0 → −1, 1 → +1) for cross-correlation
+    rx = 2.0 * received_bits.astype(np.float32) - 1.0
+    kn = 2.0 * known_bits.astype(np.float32) - 1.0
 
-        if score > best_score:
-            best_score = score
-            best_offset = offset
+    corr = np.correlate(rx, kn, mode="valid")
+    # Normalize to [0, 1]: perfect match → +known_len → score 1.0
+    scores = (corr / known_len + 1.0) / 2.0
+    best_offset = int(np.argmax(scores))
+    best_score = float(scores[best_offset])
 
     return best_offset, best_score
 
@@ -76,5 +75,5 @@ def find_header(
         "offset": offset,
         "score": score,
         "detected": score >= threshold,
-        "sync_length": int(len(sync_bits)),
+        "sync_length": len(sync_bits),
     }

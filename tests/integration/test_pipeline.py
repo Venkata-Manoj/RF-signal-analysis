@@ -156,9 +156,9 @@ def test_bits_preview_present():
     assert isinstance(preview, list), f"bits_preview must be list, got {type(preview)}"
     num_bits = int(dem["num_bits"])
     expected_len = min(2048, num_bits)
-    assert len(preview) == expected_len, (
-        f"bits_preview length {len(preview)} != min(2048, num_bits)={expected_len}"
-    )
+    assert (
+        len(preview) == expected_len
+    ), f"bits_preview length {len(preview)} != min(2048, num_bits)={expected_len}"
     assert all(int(b) in (0, 1) for b in preview), "bits_preview must contain only 0/1"
 
     # Assert: preview matches direct demod of the same file (first N exactly).

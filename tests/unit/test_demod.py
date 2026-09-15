@@ -8,18 +8,22 @@ from __future__ import annotations
 
 import numpy as np
 
-from rf_analyzer.core.demod import demod_2fsk, demod_bpsk, demod_qpsk
+from rf_analyzer.core.demod import (
+    bits_to_bpsk,
+    bits_to_qam16,
+    demod_2fsk,
+    demod_bpsk,
+    demod_qam16,
+    demod_qpsk,
+)
 
 
 def test_bpsk_demod_clean():
     # Arrange
     bits = np.array([0, 1, 0, 1, 1], dtype=np.uint8)
-    symbols = 2.0 * bits.astype(np.float32) - 1.0
-    samples = symbols.astype(np.complex64)
-
+    symbols = bits_to_bpsk(bits).astype(np.complex64)
     # Act
-    demod_bits = demod_bpsk(samples)
-
+    demod_bits = demod_bpsk(symbols)
     # Assert
     assert np.array_equal(demod_bits, bits)
 
@@ -27,21 +31,35 @@ def test_bpsk_demod_clean():
 def test_qpsk_demod_clean():
     # Arrange: bits as I,Q pairs.
     bits = np.array([0, 0, 0, 1, 1, 0, 1, 1], dtype=np.uint8)
-
     i_bits = bits[0::2]
     q_bits = bits[1::2]
-
-    i_sym = 2.0 * i_bits.astype(np.float32) - 1.0
-    q_sym = 2.0 * q_bits.astype(np.float32) - 1.0
-
+    i_sym = bits_to_bpsk(i_bits)
+    q_sym = bits_to_bpsk(q_bits)
     samples = (i_sym + 1j * q_sym) / np.sqrt(2.0)
     samples = samples.astype(np.complex64)
-
     # Act
     demod_bits = demod_qpsk(samples)
-
     # Assert
     assert np.array_equal(demod_bits, bits)
+
+
+def test_qam16_roundtrip_clean():
+    # Arrange
+    rng = np.random.default_rng(42)
+    bits = rng.integers(0, 2, size=400, dtype=np.uint8)  # multiple of 4
+    symbols = bits_to_qam16(bits)
+    # Act
+    recovered = demod_qam16(symbols)
+    # Assert: naive phase-aligned must be bit-exact on clean symbols
+    assert np.array_equal(recovered[: len(bits)], bits)
+
+
+def test_qam16_alias_exists():
+    from rf_analyzer.core import demod as m
+
+    assert hasattr(m, "demod_qam16")
+    assert hasattr(m, "demod_16qam")
+    assert hasattr(m, "demod_qam")
 
 
 def _generate_2fsk(
@@ -55,14 +73,12 @@ def _generate_2fsk(
     samples_per_symbol = int(sample_rate * symbol_duration)
     phase = 0.0
     samples = []
-
     for bit in bits:
         freq = freq_high if bit == 1 else freq_low
         t = np.arange(samples_per_symbol) / sample_rate
         segment = np.exp(1j * (2 * np.pi * freq * t + phase))
         samples.append(segment)
         phase = np.angle(segment[-1])
-
     return np.concatenate(samples).astype(np.complex64), samples_per_symbol
 
 
@@ -73,12 +89,7 @@ def test_2fsk_demod_roundtrip_clean():
     samples, sps = _generate_2fsk(bits)
     assert sps == 100
 
-    # Act: per-sample FM demod, then majority vote per symbol window.
-    raw_bits = np.asarray(demod_2fsk(samples), dtype=np.uint8)
-    voted = np.zeros(len(bits), dtype=np.uint8)
-    for i in range(len(bits)):
-        window = raw_bits[i * sps : (i + 1) * sps]
-        voted[i] = 1 if float(np.mean(window)) > 0.5 else 0
-
+    # Act: per-symbol instantaneous-frequency demod (1 bit per symbol).
+    raw_bits = np.asarray(demod_2fsk(samples, samples_per_symbol=sps), dtype=np.uint8)
     # Assert: clean roundtrip recovers every bit.
-    assert np.array_equal(voted, bits)
+    assert np.array_equal(raw_bits, bits)

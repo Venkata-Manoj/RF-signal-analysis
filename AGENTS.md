@@ -1,8 +1,8 @@
 # AGENTS.md — RF Signal Analysis Workbench MVP
 
 ## Status / source of truth
-- Repo has committed skeleton (Milestone 1 done: `4874305`): manifests, `src/rf_analyzer` stubs, `scripts/` stubs, `tests/unit/test_setup.py` passing. No MVP logic yet — implement per order below.
-- `info.md` is authoritative for scope, schemas, and starter code. Don't re-derive architecture — implement `info.md` §9–§12 in order (§34): skeleton → `requirements.txt` → `core/io.py` → `scripts/generate_test_data.py` → `core/dsp.py` → `core/demod.py` → `core/correlator.py` → `pipeline.py` → tests → GUI shell.
+- Repo at Milestone 1+ (Gap-Closure complete): 60 pytest tests passing, `python scripts/verify_mvp.py → PASS`, ruff/black clean. Implements 16-QAM demod, sampling-rate estimation, FEC/de-interleave candidate scoring, portal task alignment, CI workflow.
+- `info.md` is authoritative for scope, schemas, and starter code. Implemented `info.md` §9–§12 gap-closure per `docs/superpowers/plans/2026-09-15-sih26147-gap-closure.md`.
 - Target layout (§10): `src/rf_analyzer/{config.py,pipeline.py,core/{io,dsp,demod,correlator,report}.py,gui/main_window.py}`, `scripts/{generate_test_data,run_app,run_pipeline,verify_mvp}.py`, `tests/{unit,integration}`, `sample_data/`, `output/`.
 
 ## Stack (do not swap)

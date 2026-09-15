@@ -9,9 +9,10 @@ Contracts (do not change without updating AGENTS.md):
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import soundfile as sf
-from pathlib import Path
 
 
 def load_iq(
@@ -86,10 +87,57 @@ def load_wav(file_path: str) -> tuple[np.ndarray, float]:
 
 
 def detect_file_type(file_path: str) -> str:
-    """Return 'iq' or 'wav' from file suffix (case-insensitive)."""
+    """Return 'iq' or 'wav' from file suffix (case-insensitive).
+
+    Extended for real-world captures: .cf32, .ci16, .raw, .dat,
+    .sigmf-data are treated as raw IQ.
+    """
     suffix = Path(file_path).suffix.lower()
-    if suffix == ".iq":
+    if suffix in (".iq", ".cf32", ".ci16", ".raw", ".dat", ".sigmf-data"):
         return "iq"
     if suffix == ".wav":
         return "wav"
     raise ValueError(f"Unsupported file type: {suffix}")
+
+
+def load_sigmf_meta(file_path: str) -> dict | None:
+    """Read SigMF sidecar metadata if it exists.
+
+    Given a data file (e.g. ``signal.sigmf-data`` or ``signal.iq``),
+    looks for a corresponding ``.sigmf-meta`` JSON file and extracts:
+
+    * ``sample_rate`` from ``global.core:sample_rate``
+    * ``center_frequency`` from the first capture's ``core:frequency``
+    * ``datatype`` from ``global.core:datatype``
+
+    Returns ``None`` if the sidecar is absent or malformed.
+    """
+    import json as _json
+
+    fp = Path(file_path)
+    # Try exact companion: signal.sigmf-data → signal.sigmf-meta
+    meta_path = fp.with_suffix(".sigmf-meta")
+    if not meta_path.exists():
+        # Also check stem.sigmf-meta for files like signal.iq
+        meta_path = fp.parent / (fp.stem + ".sigmf-meta")
+    if not meta_path.exists():
+        return None
+
+    try:
+        with open(meta_path, encoding="utf-8") as fh:
+            meta = _json.load(fh)
+    except Exception:
+        return None
+
+    result: dict = {}
+    glob = meta.get("global", {})
+    result["sample_rate"] = glob.get("core:sample_rate")
+    result["datatype"] = glob.get("core:datatype")
+
+    captures = meta.get("captures", [])
+    if captures:
+        result["center_frequency"] = captures[0].get("core:frequency")
+    else:
+        result["center_frequency"] = None
+
+    return result

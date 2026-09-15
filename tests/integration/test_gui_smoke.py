@@ -13,9 +13,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
 PyQt6 = pytest.importorskip("PyQt6.QtWidgets", reason="PyQt6 not installed")
-from PyQt6.QtWidgets import QApplication  # noqa: E402
+from PyQt6.QtWidgets import QApplication
 
-from rf_analyzer.gui.main_window import MainWindow  # noqa: E402
+from rf_analyzer.gui.main_window import MainWindow
 
 
 def test_main_window_opens():

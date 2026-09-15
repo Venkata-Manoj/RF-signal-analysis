@@ -1,6 +1,6 @@
 """Generate deterministic synthetic test data. See info.md §15.
 
-Seeded (42) tone/BPSK/QPSK/2-FSK ``.iq`` + ``.wav`` + ``*_bits.npy`` files
+Seeded (42) tone/BPSK/QPSK/2-FSK/qam16 ``.iq`` + ``.wav`` + ``*_bits.npy`` files
 into ``sample_data/`` (resolved relative to the repo root so the script
 works regardless of the caller's working directory).
 """
@@ -59,13 +59,10 @@ def generate_bpsk(
 def bits_to_qpsk(bits: np.ndarray) -> np.ndarray:
     if len(bits) % 2 != 0:
         bits = bits[:-1]
-
     i_bits = bits[0::2]
     q_bits = bits[1::2]
-
     i_sym = 2.0 * i_bits.astype(np.float32) - 1.0
     q_sym = 2.0 * q_bits.astype(np.float32) - 1.0
-
     symbols = (i_sym + 1j * q_sym) / np.sqrt(2.0)
     return symbols.astype(np.complex64)
 
@@ -89,14 +86,12 @@ def generate_2fsk(
     samples_per_symbol = int(sample_rate * symbol_duration)
     phase = 0.0
     samples = []
-
     for bit in bits:
         freq = freq_high if bit == 1 else freq_low
         t = np.arange(samples_per_symbol) / sample_rate
         segment = np.exp(1j * (2 * np.pi * freq * t + phase))
         samples.append(segment)
         phase = np.angle(segment[-1])
-
     samples = np.concatenate(samples).astype(np.complex64)
     return samples
 
@@ -104,12 +99,46 @@ def generate_2fsk(
 def hex_to_bits(hex_string: str, bit_length: int | None = None):
     hex_string = hex_string.lower().replace("0x", "")
     value = int(hex_string, 16)
-
     if bit_length is None:
         bit_length = len(hex_string) * 4
-
     bits = [(value >> (bit_length - 1 - i)) & 1 for i in range(bit_length)]
     return np.array(bits, dtype=np.uint8)
+
+
+# ---- QAM16 helpers (SIH26147 portal bullet ii) ----
+
+
+def bits_to_qam16(bits: np.ndarray) -> np.ndarray:
+    """Gray-coded 16-QAM mapper, 4 bits/symbol."""
+    bits = np.asarray(bits, dtype=np.uint8).ravel()
+    n = (len(bits) // 4) * 4
+    if n == 0:
+        return np.array([], dtype=np.complex64)
+    bits = bits[:n]
+    i_msb, i_lsb, q_msb, q_lsb = bits[0::4], bits[1::4], bits[2::4], bits[3::4]
+
+    def level(msb: np.ndarray, lsb: np.ndarray) -> np.ndarray:
+        is_pos = msb == 1
+        is_inner = lsb == 1
+        lvl = np.where(is_inner, 1.0, 3.0)
+        return np.where(is_pos, lvl, -lvl)
+
+    i = level(i_msb, i_lsb)
+    q = level(q_msb, q_lsb)
+    symbols = (i + 1j * q) / np.sqrt(10.0)
+    return symbols.astype(np.complex64)
+
+
+def generate_qam16(
+    sync_bits: np.ndarray, payload_bits: np.ndarray, snr_db: float = 30.0
+):
+    bits = np.concatenate([sync_bits, payload_bits])
+    pad = (-len(bits)) % 4
+    if pad:
+        bits = np.concatenate([bits, np.zeros(pad, dtype=np.uint8)])
+    symbols = bits_to_qam16(bits)
+    symbols = add_awgn(symbols, snr_db)
+    return bits, symbols.astype(np.complex64)
 
 
 def main():
@@ -118,7 +147,6 @@ def main():
 
     sync_word = "0x1ACFFC1D"
     sync_bits = hex_to_bits(sync_word)
-
     payload_bits = np.random.randint(0, 2, size=1000, dtype=np.uint8)
 
     # Tone
@@ -144,6 +172,12 @@ def main():
     save_iq(OUTPUT_DIR / "fsk2.iq", fsk_samples)
     save_wav_iq(OUTPUT_DIR / "fsk2.wav", fsk_samples, SAMPLE_RATE)
     np.save(OUTPUT_DIR / "fsk2_bits.npy", fsk_bits)
+
+    # 16-QAM (SIH26147 portal bullet ii)
+    qam_bits, qam_samples = generate_qam16(sync_bits, payload_bits)
+    save_iq(OUTPUT_DIR / "qam16.iq", qam_samples)
+    save_wav_iq(OUTPUT_DIR / "qam16.wav", qam_samples, SAMPLE_RATE)
+    np.save(OUTPUT_DIR / "qam16_bits.npy", qam_bits)
 
     print("Synthetic test data generated in sample_data/")
 

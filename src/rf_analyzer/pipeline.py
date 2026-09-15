@@ -9,8 +9,8 @@ schema in info.md §13 (keys ``meta``/``input``/``signal``/``modulation``/
 MVP notes (intentionally naive, per info.md §12):
 
 * DSP: PSD-peak center frequency, median-floor bandwidth/SNR.
-* Demod: phase-aligned BPSK/QPSK (``real > 0``/``imag > 0``), 2-FSK via
-  ``diff(unwrap(angle))``. No Costas loop / timing recovery (V2, §32).
+* Demod: phase-aligned BPSK/QPSK/16-QAM (``real > 0``/``imag > 0``),
+  2-FSK via ``diff(unwrap(angle))``. No Costas loop / timing recovery (V2, §32).
 * ``AUTO`` modulation is a variance heuristic only, not a real classifier.
 * FEC/interleaving are candidate-score stubs — never claim blind detection.
 """
@@ -23,14 +23,20 @@ from pathlib import Path
 import numpy as np
 
 from rf_analyzer.config import CORRELATION_THRESHOLD, TOOL_NAME, VERSION
+from rf_analyzer.core.classifier import classify_modulation as classify_modulation_hoc
 from rf_analyzer.core.correlator import find_header, hex_to_bits
-from rf_analyzer.core.demod import demod_2fsk, demod_bpsk, demod_qpsk
+from rf_analyzer.core.deinterleave import score_deinterleave_candidates
+from rf_analyzer.core.demod import demod_2fsk, demod_bpsk, demod_qam16, demod_qpsk
 from rf_analyzer.core.dsp import (
     compute_psd,
     estimate_bandwidth,
     estimate_center_frequency,
+    estimate_cfo,
+    estimate_sampling_rate,
     estimate_snr,
+    estimate_symbol_rate,
 )
+from rf_analyzer.core.fec import score_fec_candidates
 from rf_analyzer.core.io import load_iq, load_wav
 
 REQUIRED_REPORT_KEYS = (
@@ -79,23 +85,17 @@ def _error_report(file_name: str, warnings: list, message: str) -> dict:
 
 
 def _classify_modulation(samples: np.ndarray) -> tuple[str, float, list[str]]:
-    """Naive MVP modulation guess from signal variances.
+    """Modulation classification using Higher-Order Cumulants with heuristic fallback."""
+    try:
+        mod_type, conf, alts = classify_modulation_hoc(samples)
+        if mod_type != "UNKNOWN":
+            return mod_type, conf, alts
+    except Exception:
+        pass
 
-    Heuristic (clean synthetic data only):
-
-    * BPSK concentrates energy on one quadrature axis, so
-      ``min(var(I), var(Q)) / max(var(I), var(Q))`` is small.
-    * 2-FSK hops between two stable tones, so its instantaneous-frequency
-      variance is moderate, while 1-sample-per-symbol PSK jumps between
-      constellation points and shows a large ``var(diff(unwrap(angle)))``.
-    * Otherwise assume QPSK.
-
-    Returns ``(estimated_type, confidence, alternatives)`` with confidence
-    in 0.5-0.9. This is a placeholder heuristic, not a real classifier.
-    """
     flat = np.asarray(samples).ravel()
     if flat.size < 2:
-        return "BPSK", 0.5, ["QPSK", "2-FSK"]
+        return "BPSK", 0.5, ["QPSK", "2-FSK", "16-QAM"]
 
     real = np.real(flat).astype(np.float64)
     imag = np.imag(flat).astype(np.float64)
@@ -104,13 +104,19 @@ def _classify_modulation(samples: np.ndarray) -> tuple[str, float, list[str]]:
     peak = max(var_r, var_i)
     ratio = (min(var_r, var_i) / peak) if peak > 0 else 1.0
     if ratio < 0.5:
-        return "BPSK", 0.8, ["QPSK", "2-FSK"]
+        return "BPSK", 0.8, ["QPSK", "2-FSK", "16-QAM"]
+
+    # QAM: multi-level envelope => high magnitude variance
+    mag = np.abs(flat)
+    var_mag = float(np.var(mag))
+    if var_mag > 0.04:
+        return "16-QAM", 0.6, ["QPSK", "BPSK"]
 
     phase = np.unwrap(np.angle(flat.astype(np.complex128)))
     var_f = float(np.var(np.diff(phase)))
     if var_f < 1.0:
-        return "2-FSK", 0.65, ["BPSK", "QPSK"]
-    return "QPSK", 0.7, ["BPSK", "2-FSK"]
+        return "2-FSK", 0.65, ["BPSK", "QPSK", "16-QAM"]
+    return "QPSK", 0.7, ["BPSK", "2-FSK", "16-QAM"]
 
 
 def analyze_file(request: dict) -> dict:
@@ -123,7 +129,7 @@ def analyze_file(request: dict) -> dict:
             "sample_rate": 100000,       # required for .iq (raw has no metadata)
             "center_frequency": 0,
             "iq_format": "complex64",    # complex64 | int16 | uint8 ("auto" -> complex64)
-            "modulation": "auto",        # auto | BPSK | QPSK | 2-FSK | FSK
+            "modulation": "auto",        # auto | BPSK | QPSK | 2-FSK | 16-QAM | FSK
             "sync_word": "0x1ACFFC1D",   # optional hex string
         }
 
@@ -153,7 +159,7 @@ def analyze_file(request: dict) -> dict:
             iq_format = str(request.get("iq_format", "complex64") or "complex64")
             if iq_format.lower() == "auto":
                 iq_format = "complex64"
-            sample_rate_raw = request.get("sample_rate", None)
+            sample_rate_raw = request.get("sample_rate")
             if sample_rate_raw is None:
                 raise ValueError(
                     "sample_rate is required for .iq files "
@@ -173,6 +179,15 @@ def analyze_file(request: dict) -> dict:
         center_freq = float(estimate_center_frequency(freqs, psd_db))
         bandwidth = float(estimate_bandwidth(freqs, psd_db))
         snr = float(estimate_snr(psd_db))
+        sample_rate_estimate = float(estimate_sampling_rate(bandwidth))
+        try:
+            symbol_rate_estimate = float(estimate_symbol_rate(samples, sample_rate))
+        except Exception:
+            symbol_rate_estimate = 0.0
+        try:
+            cfo_estimate = float(estimate_cfo(samples, sample_rate))
+        except Exception:
+            cfo_estimate = 0.0
 
         requested = str(request.get("modulation", "auto") or "auto").upper()
         if requested == "AUTO":
@@ -183,6 +198,11 @@ def analyze_file(request: dict) -> dict:
             confidence = 0.5  # user-selected, not estimated
             alternatives = []
             mode = estimated_type
+        elif requested in ("16-QAM", "QAM16", "QAM"):
+            estimated_type = "16-QAM"
+            confidence = 0.5
+            alternatives = ["BPSK", "QPSK", "2-FSK"]
+            mode = "16-QAM"
         else:
             warnings.append(
                 f"Unsupported modulation '{requested}'. Used BPSK fallback."
@@ -196,10 +216,12 @@ def analyze_file(request: dict) -> dict:
             bits = demod_bpsk(samples)
         elif mode == "QPSK":
             bits = demod_qpsk(samples)
-        elif mode == "2-FSK":
+        elif mode in ("2-FSK", "2FSK"):
             # Per-sample instantaneous-frequency demod; symbol-timing
             # recovery (samples_per_symbol handling) is a V2 concern.
             bits = demod_2fsk(samples)
+        elif mode == "16-QAM":
+            bits = demod_qam16(samples)
         else:  # pragma: no cover - defensive; mode is normalized above
             warnings.append(f"Unsupported modulation '{mode}'. Used BPSK fallback.")
             mode = "BPSK"
@@ -228,7 +250,10 @@ def analyze_file(request: dict) -> dict:
                 "detected": False,
             }
 
-        return {
+        fec_res = score_fec_candidates(bits)
+        ilv_res = score_deinterleave_candidates(bits)
+
+        report = {
             "meta": {
                 "tool_name": TOOL_NAME,
                 "version": VERSION,
@@ -242,11 +267,14 @@ def analyze_file(request: dict) -> dict:
                 "iq_format": request.get("iq_format", "auto"),
             },
             "signal": {
-                "num_samples": int(len(samples)),
+                "num_samples": len(samples),
                 "duration_seconds": float(len(samples) / sample_rate),
                 "center_frequency_estimate": center_freq,
                 "bandwidth_estimate": bandwidth,
                 "snr_db": snr,
+                "sample_rate_estimate": sample_rate_estimate,
+                "symbol_rate_estimate": symbol_rate_estimate,
+                "cfo_estimate_hz": cfo_estimate,
             },
             "modulation": {
                 "estimated_type": estimated_type,
@@ -255,7 +283,7 @@ def analyze_file(request: dict) -> dict:
             },
             "demodulation": {
                 "mode": mode,
-                "num_bits": int(len(bits)),
+                "num_bits": len(bits),
                 "bitstream_file": None,
                 "bits_preview": [int(b) for b in list(bits[:2048])],
             },
@@ -263,14 +291,16 @@ def analyze_file(request: dict) -> dict:
             # Candidate-score stubs only: the MVP never claims blind FEC /
             # interleaver detection (see info.md §30 demo-defense lines).
             "fec": {
-                "candidate": None,
-                "confidence": 0.0,
-                "crc_pass": None,
+                "candidate": fec_res["candidate"],
+                "confidence": float(fec_res["confidence"]),
+                "crc_pass": fec_res["crc_pass"],
+                "candidates": fec_res.get("candidates", []),
             },
             "interleaving": {
-                "candidate": None,
-                "depth": None,
-                "confidence": 0.0,
+                "candidate": ilv_res["candidate"],
+                "depth": ilv_res["depth"],
+                "confidence": float(ilv_res["confidence"]),
+                "candidates": ilv_res.get("candidates", []),
             },
             # MVP hint for eye diagram: current synthetic generator uses
             # 1 sample/symbol for BPSK/QPSK/2-FSK.
@@ -281,6 +311,23 @@ def analyze_file(request: dict) -> dict:
             "warnings": warnings,
             "errors": errors,
         }
+
+        # Save bitstream/report artifacts (best-effort, never fail analysis).
+        try:
+            from rf_analyzer.core.report import save_bits, save_report
+
+            out_dir = Path("output")
+            out_dir.mkdir(exist_ok=True)
+            bit_path = out_dir / f"{file_path.stem}_bits.bin"
+            rep_path = out_dir / f"{file_path.stem}_report.json"
+            if len(bits) > 0:
+                save_bits(bits, str(bit_path))
+                report["demodulation"]["bitstream_file"] = str(bit_path)
+            save_report(report, str(rep_path))
+        except Exception:
+            pass
+
+        return report
 
     except Exception as exc:
         return _error_report(file_path.name, warnings, str(exc))

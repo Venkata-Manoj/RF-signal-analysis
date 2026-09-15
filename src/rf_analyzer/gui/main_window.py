@@ -289,7 +289,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
         self.mod_combo = QComboBox()
         self.mod_combo.setObjectName("modulation_combo")
-        self.mod_combo.addItems(["Auto", "BPSK", "QPSK", "2-FSK"])
+        self.mod_combo.addItems(["Auto", "BPSK", "QPSK", "2-FSK", "16-QAM", "QAM"])
         self.mod_combo.setCurrentText("Auto")
         self.mod_combo.setToolTip("Demodulation mode (Auto lets the pipeline decide)")
         # Alias used by some tests.
@@ -453,9 +453,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         try:
             self.sample_rate_spin.valueChanged.connect(self._on_params_changed)
             self.center_freq_spin.valueChanged.connect(self._on_params_changed)
-            self.iq_format_combo.currentTextChanged.connect(
-                self._on_params_changed
-            )
+            self.iq_format_combo.currentTextChanged.connect(self._on_params_changed)
             self.mod_combo.currentTextChanged.connect(self._on_params_changed)
             self.sync_word_edit.textChanged.connect(self._on_params_changed)
         except Exception:
@@ -476,9 +474,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             print(str(message))
         except UnicodeEncodeError:
             try:
-                print(
-                    str(message).encode("ascii", "replace").decode("ascii")
-                )
+                print(str(message).encode("ascii", "replace").decode("ascii"))
             except Exception:
                 pass
 
@@ -535,9 +531,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         """Show last-Run params vs current UI values (active-params label)."""
         try:
             if self._last_request is None:
-                self.last_analysis_label.setText(
-                    "Last analysis: — (no run yet)"
-                )
+                self.last_analysis_label.setText("Last analysis: — (no run yet)")
                 return
             last = self._request_summary(self._last_request)
             cur = self._request_summary(self._current_ui_request())
@@ -565,9 +559,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     "Parameters changed — press to re-run full pipeline (Ctrl+R)"
                 )
             else:
-                self.run_btn.setToolTip(
-                    "Run full pipeline on the open file (Ctrl+R)"
-                )
+                self.run_btn.setToolTip("Run full pipeline on the open file (Ctrl+R)")
         except Exception:
             pass
 
@@ -622,9 +614,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             # Live display-only refresh (no estimation).
             if self.current_file is not None:
                 try:
-                    samples, rate = self._load_display_samples(
-                        _from_param_change=True
-                    )
+                    samples, rate = self._load_display_samples(_from_param_change=True)
                     if samples is not None and len(samples) > 0:
                         if rate is None or rate <= 0:
                             rate = float(self.sample_rate_spin.value() or 1.0)
@@ -997,9 +987,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             try:
                 disp = (report or {}).get("display", {}) or {}
                 sps = disp.get("samples_per_symbol", None)
-                mode = ((report or {}).get("demodulation", {}) or {}).get(
-                    "mode", ""
-                )
+                mode = ((report or {}).get("demodulation", {}) or {}).get("mode", "")
                 if sps is None:
                     sps = 1 if str(mode).upper() in ("BPSK", "QPSK") else 8
                 sps = int(sps)
@@ -1103,9 +1091,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 # No symbol timing exists at 1 sample/symbol, so never fake
                 # a 2-symbol eye — show chunked overlay instead.
                 try:
-                    self.eye_plot.setTitle(
-                        "Eye diagram (I) (1 sps: overlay view)"
-                    )
+                    self.eye_plot.setTitle("Eye diagram (I) (1 sps: overlay view)")
                 except Exception:
                     pass
                 real = np.real(flat).astype(float)
@@ -1122,9 +1108,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 traces = real[: ntraces * chunk].reshape(ntraces, chunk)
                 pen = pg.mkPen("#38BDF8", width=1)
                 for tr in traces[:40]:
-                    self.eye_plot.plot(
-                        np.arange(tr.size), tr.astype(float), pen=pen
-                    )
+                    self.eye_plot.plot(np.arange(tr.size), tr.astype(float), pen=pen)
                 return
             try:
                 self.eye_plot.setTitle("Eye diagram (I)")
