@@ -261,3 +261,248 @@ def estimate_and_correct_cfo(
     cfo = float(estimate_cfo(samples, sample_rate))
     corrected = correct_cfo(np.asarray(samples), sample_rate, cfo)
     return corrected, cfo
+
+
+# --------------------------------------------------------------------------- #
+# Sampling-rate hypothesis testing
+# --------------------------------------------------------------------------- #
+
+# Rates a real capture chain plausibly runs at (sound cards, SDRs, lab gear).
+STANDARD_SAMPLE_RATES = (
+    8_000,
+    16_000,
+    22_050,
+    32_000,
+    44_100,
+    48_000,
+    96_000,
+    192_000,
+    250_000,
+    500_000,
+    1_000_000,
+    1_228_800,
+    2_000_000,
+    2_400_000,
+    5_000_000,
+    10_000_000,
+    20_000_000,
+    40_000_000,
+    61_440_000,
+    122_880_000,
+)
+BW_GUARD_FACTORS = (2.0, 2.2, 2.5, 4.0)
+OVERSAMPLING_HYPOTHESES = (2, 4, 8, 16)
+
+
+def estimate_sampling_rate_candidates(
+    samples: np.ndarray,
+    sample_rate: float,
+    bandwidth_estimate: float | None = None,
+    symbol_rate_estimate: float | None = None,
+    top_n: int = 5,
+) -> list[dict]:
+    """Rank plausible sampling rates instead of returning a single number.
+
+    Raw ``.iq`` files carry no metadata, so the true sample rate is a
+    hypothesis, not a measurement. This gathers candidates from three
+    independent sources and scores each one:
+
+    * Nyquist guards over the occupied bandwidth (``BW x {2.0, 2.2, 2.5, 4}``);
+    * oversampling hypotheses over the ``|x|²`` symbol-rate line
+      (``Rs x {2, 4, 8, 16}``);
+    * standard capture rates that fall inside the plausible band.
+
+    Scoring rewards Nyquist feasibility, proximity to the naive
+    ``2.2 x BW`` hint, an integer oversampling ratio, and standard rates.
+
+    Returns:
+        Up to ``top_n`` dicts ``{"rate_hz", "score", "rationale"}`` sorted by
+        descending score. Empty when no bandwidth information is available.
+
+    This is hypothesis ranking, not blind estimation — see ``info.md`` §30.
+    """
+    x = np.asarray(samples)
+    sr = float(sample_rate)
+
+    bw = float(bandwidth_estimate) if bandwidth_estimate else 0.0
+    if bw <= 0:
+        if x.size == 0 or sr <= 0:
+            return []
+        freqs, psd_db = compute_psd(x, sr)
+        bw = float(estimate_bandwidth(freqs, psd_db))
+    if bw <= 0:
+        return []
+
+    rs = float(symbol_rate_estimate or 0.0)
+    if rs <= 0 and x.size >= 64:
+        try:
+            rs = float(estimate_symbol_rate(x, sr))
+        except Exception:
+            rs = 0.0
+
+    collected: dict[int, dict] = {}
+
+    def _add(rate: float, rationale: str) -> None:
+        if rate <= 0 or not np.isfinite(rate):
+            return
+        key = round(rate)
+        entry = collected.setdefault(key, {"rate_hz": float(rate), "rationales": []})
+        if rationale not in entry["rationales"]:
+            entry["rationales"].append(rationale)
+
+    for factor in BW_GUARD_FACTORS:
+        _add(bw * factor, f"Nyquist x{factor:g} of occupied bandwidth")
+    if rs > 0:
+        for oversample in OVERSAMPLING_HYPOTHESES:
+            _add(
+                rs * oversample, f"{oversample}x oversampling of estimated symbol rate"
+            )
+    lo, hi = 2.0 * bw, 6.0 * bw
+    for std in STANDARD_SAMPLE_RATES:
+        if lo <= std <= hi:
+            _add(float(std), "standard capture rate inside the plausible band")
+
+    target = 2.2 * bw
+    scored: list[dict] = []
+    for entry in collected.values():
+        rate = entry["rate_hz"]
+        score = 0.40 if rate >= 2.0 * bw - 1e-9 else -0.25
+        score += 0.25 * max(0.0, 1.0 - abs(rate - target) / target)
+        if rs > 0:
+            ratio = rate / rs
+            if ratio >= 1.5:
+                frac = abs(ratio - round(ratio))
+                if frac <= 0.02:
+                    score += 0.20
+                elif frac <= 0.10:
+                    score += 0.08
+        if any(abs(rate - s) / s < 0.01 for s in STANDARD_SAMPLE_RATES):
+            score += 0.15
+        scored.append(
+            {
+                "rate_hz": rate,
+                "score": round(float(min(max(score, 0.0), 1.0)), 4),
+                "rationale": "; ".join(entry["rationales"]),
+            }
+        )
+
+    scored.sort(key=lambda d: (-d["score"], d["rate_hz"]))
+    return scored[: max(1, int(top_n))]
+
+
+# --------------------------------------------------------------------------- #
+# Constellation quality: EVM / MER / modulation order
+# --------------------------------------------------------------------------- #
+
+CONSTELLATIONS: dict[str, np.ndarray] = {}
+
+
+def ideal_constellation(mode: str) -> np.ndarray | None:
+    """Unit-average-power ideal constellation for ``mode``, or None if N/A.
+
+    Every constellation returned has average symbol power 1.0, so a received
+    signal normalised to unit power can be compared directly.
+    """
+    key = str(mode).upper().replace("_", "-").strip()
+
+    if key in CONSTELLATIONS:
+        return CONSTELLATIONS[key]
+
+    points: np.ndarray | None = None
+    if key == "BPSK":
+        points = np.array([-1.0, 1.0], dtype=np.complex128)
+    elif key in ("QPSK", "4-QAM", "4QAM"):
+        levels = np.array([-1.0, 1.0])
+        points = (levels[:, None] + 1j * levels[None, :]).ravel() / np.sqrt(2.0)
+    elif key in ("16-QAM", "QAM16", "16QAM", "QAM"):
+        levels = np.array([-3.0, -1.0, 1.0, 3.0])
+        points = (levels[:, None] + 1j * levels[None, :]).ravel() / np.sqrt(10.0)
+    elif key in ("8PSK", "8-PSK"):
+        points = np.exp(1j * 2.0 * np.pi * np.arange(8) / 8.0)
+    elif key in ("64-QAM", "QAM64", "64QAM"):
+        levels = np.arange(-7, 8, 2, dtype=float)
+        points = (levels[:, None] + 1j * levels[None, :]).ravel() / np.sqrt(42.0)
+
+    if points is not None:
+        CONSTELLATIONS[key] = points
+    return points
+
+
+def modulation_order(mode: str) -> int | None:
+    """Bits per symbol for a modulation label (None when unknown)."""
+    constellation = ideal_constellation(mode)
+    if constellation is None or constellation.size < 2:
+        return None
+    return round(np.log2(constellation.size))
+
+
+def compute_evm(
+    samples: np.ndarray, mode: str = "BPSK", samples_per_symbol: int = 1
+) -> dict:
+    """Error-vector magnitude / MER for a phase-aligned constellation.
+
+    Decides each received symbol to the nearest ideal point for the assumed
+    modulation and measures the residual error. This doubles as a modulation
+    sanity check: a wrong ``mode`` forces large errors, so a low EVM is
+    independent evidence that the modulation guess is right.
+
+    Caveat (MVP): no equalisation or carrier recovery, so a rotated or
+    frequency-offset signal inflates EVM. Use :func:`estimate_and_correct_cfo`
+    first when that matters.
+
+    Returns:
+        ``{"applicable", "mode", "modulation_order", "evm_percent",
+        "mer_db", "snr_db_from_evm", "n_symbols"}``. ``applicable`` is False
+        for modulations with no constellation (e.g. FSK).
+    """
+    constellation = ideal_constellation(mode)
+    blank = {
+        "applicable": False,
+        "mode": str(mode),
+        "modulation_order": None,
+        "evm_percent": None,
+        "mer_db": None,
+        "snr_db_from_evm": None,
+        "n_symbols": 0,
+    }
+    if constellation is None:
+        return blank
+
+    x = np.asarray(samples, dtype=np.complex128).ravel()
+    if x.size == 0:
+        return blank
+
+    sps = max(1, int(samples_per_symbol or 1))
+    if sps > 1:
+        n_symbols = x.size // sps
+        if n_symbols < 1:
+            return blank
+        # Sample at the centre of each symbol interval.
+        x = x[: n_symbols * sps].reshape(n_symbols, sps).mean(axis=1)
+
+    power = float(np.mean(np.abs(x) ** 2))
+    if power <= 1e-20:
+        return blank
+    x = x / np.sqrt(power)
+
+    distances = np.abs(x[:, None] - constellation[None, :])
+    nearest = constellation[np.argmin(distances, axis=1)]
+
+    error_power = float(np.mean(np.abs(x - nearest) ** 2))
+    ideal_power = float(np.mean(np.abs(nearest) ** 2))
+    if ideal_power <= 1e-20:
+        return blank
+
+    evm_ratio = float(np.sqrt(error_power / ideal_power))
+    evm_percent = evm_ratio * 100.0
+    mer_db = float(-20.0 * np.log10(evm_ratio)) if evm_ratio > 0 else float("inf")
+
+    return {
+        "applicable": True,
+        "mode": str(mode),
+        "modulation_order": modulation_order(mode),
+        "evm_percent": evm_percent,
+        "mer_db": mer_db,
+        "snr_db_from_evm": mer_db,
+        "n_symbols": int(x.size),
+    }
