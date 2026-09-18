@@ -22,10 +22,20 @@ from pathlib import Path
 
 import numpy as np
 
-from rf_analyzer.config import CORRELATION_THRESHOLD, TOOL_NAME, VERSION
+from rf_analyzer.config import (
+    CORRELATION_THRESHOLD,
+    DECODE_MAX_BITS,
+    DECODE_TIME_BUDGET_S,
+    PAYLOAD_PREVIEW_BYTES,
+    TOOL_NAME,
+    VERSION,
+)
 from rf_analyzer.core.classifier import classify_modulation as classify_modulation_hoc
 from rf_analyzer.core.correlator import find_header, hex_to_bits
-from rf_analyzer.core.deinterleave import score_deinterleave_candidates
+from rf_analyzer.core.deinterleave import (
+    score_deinterleave_candidates,
+    search_interleaver,
+)
 from rf_analyzer.core.demod import demod_2fsk, demod_bpsk, demod_qam16, demod_qpsk
 from rf_analyzer.core.dsp import (
     compute_psd,
@@ -37,7 +47,8 @@ from rf_analyzer.core.dsp import (
     estimate_symbol_rate,
 )
 from rf_analyzer.core.fec import score_fec_candidates
-from rf_analyzer.core.io import load_iq, load_wav
+from rf_analyzer.core.io import detect_iq_format, load_iq, load_wav
+from rf_analyzer.core.payload import payload_report
 
 REQUIRED_REPORT_KEYS = (
     "meta",
@@ -71,11 +82,13 @@ def _error_report(file_name: str, warnings: list, message: str) -> dict:
             "sample_rate": None,
             "center_frequency": None,
             "iq_format": None,
+            "iq_format_used": None,
         },
         "signal": {},
         "modulation": {},
         "demodulation": {},
         "correlation": {},
+        "payload": {},
         "fec": {},
         "interleaving": {},
         "display": {},
@@ -128,13 +141,16 @@ def analyze_file(request: dict) -> dict:
             "file_path": "sample_data/bpsk.iq",
             "sample_rate": 100000,       # required for .iq (raw has no metadata)
             "center_frequency": 0,
-            "iq_format": "complex64",    # complex64 | int16 | uint8 ("auto" -> complex64)
+            "iq_format": "complex64",    # complex64 | int16 | uint8 | int8 | auto
             "modulation": "auto",        # auto | BPSK | QPSK | 2-FSK | 16-QAM | FSK
             "sync_word": "0x1ACFFC1D",   # optional hex string
+            "decode": True,              # run the CRC-verified FEC search
+            "frame_bits": None,          # optional coded-region length hint
         }
 
-    Returns a report dict per info.md §13. Unsupported suffixes and
-    processing failures yield an error report (``errors=[msg]``) instead of
+    Returns a report dict per info.md §13, extended with a ``payload`` block
+    (raw payload rendering plus any CRC-verified decode). Unsupported suffixes
+    and processing failures yield an error report (``errors=[msg]``) instead of
     raising, except a missing ``sample_rate`` for ``.iq`` which raises
     ``ValueError`` (surfaced inside ``errors`` by the handler below).
     """
@@ -146,6 +162,7 @@ def analyze_file(request: dict) -> dict:
 
     warnings: list[str] = []
     errors: list[str] = []
+    iq_format: str | None = None
 
     if suffix not in (".iq", ".wav"):
         return _error_report(
@@ -157,8 +174,19 @@ def analyze_file(request: dict) -> dict:
     try:
         if suffix == ".iq":
             iq_format = str(request.get("iq_format", "complex64") or "complex64")
+            detection: dict | None = None
             if iq_format.lower() == "auto":
-                iq_format = "complex64"
+                # Raw IQ carries no metadata: infer the on-disk dtype from the
+                # statistics of the byte stream itself.
+                detection = detect_iq_format(str(file_path))
+                iq_format = str(detection.get("format", "complex64"))
+                if detection.get("confidence", 0.0) < 0.6:
+                    warnings.append(
+                        "IQ format auto-detection was inconclusive "
+                        f"(guessed '{iq_format}', confidence "
+                        f"{float(detection.get('confidence', 0.0)):.2f}). "
+                        "Pass iq_format explicitly if the result looks wrong."
+                    )
             sample_rate_raw = request.get("sample_rate")
             if sample_rate_raw is None:
                 raise ValueError(
@@ -240,18 +268,107 @@ def analyze_file(request: dict) -> dict:
                 "offset": offset,
                 "score": score,
                 "detected": detected,
+                "sync_length": int(sync_bits.size),
             }
         else:
+            sync_bits = None
             correlation = {
                 "sync_word": None,
                 "header_offset": -1,
                 "offset": -1,
                 "score": 0.0,
                 "detected": False,
+                "sync_length": 0,
             }
 
+        # The payload starts right after a *detected* sync word; with no header
+        # (or no confidence in one) the whole bit stream is treated as payload.
+        if sync_bits is not None and correlation["detected"] and offset >= 0:
+            payload_start = offset + int(sync_bits.size)
+        else:
+            payload_start = 0
+
+        # ---- Blind candidate scores (honest: never a detection claim) ----
         fec_res = score_fec_candidates(bits)
         ilv_res = score_deinterleave_candidates(bits)
+
+        # ---- Verified decode: de-interleave -> FEC -> CRC-16 ----
+        # This is a *search*, not a detection: nothing is reported as decoded
+        # unless an independent CRC-16 check passes (info.md §30).
+        decode_enabled = bool(request.get("decode", True))
+        frame_bits = request.get("frame_bits")
+        decode_res: dict | None = None
+        if decode_enabled:
+            try:
+                decode_res = search_interleaver(
+                    bits,
+                    start_offset=payload_start,
+                    max_bits=DECODE_MAX_BITS,
+                    time_budget_s=DECODE_TIME_BUDGET_S,
+                    frame_bits=int(frame_bits) if frame_bits else None,
+                )
+            except Exception as exc:  # a failed search is a miss, not an error
+                warnings.append(f"FEC/interleaver search skipped: {exc}")
+                decode_res = None
+
+        validated = bool(decode_res and decode_res.get("validated"))
+        best = decode_res.get("best") if decode_res else None
+
+        payload_block = payload_report(
+            bits,
+            start_offset=payload_start,
+            decoded=best,
+            max_bytes=PAYLOAD_PREVIEW_BYTES,
+        )
+        payload_block["decode_search"] = {
+            "enabled": decode_enabled,
+            "attempts": len(decode_res.get("attempts", [])) if decode_res else 0,
+            "validated": validated,
+            "budget_exhausted": (
+                bool(decode_res.get("budget_exhausted", False)) if decode_res else False
+            ),
+            "max_bits": DECODE_MAX_BITS,
+        }
+        if decode_enabled and not validated:
+            warnings.append(
+                "No CRC-valid FEC/interleaver hypothesis matched. The payload "
+                "shown is the raw coded bit stream, not a decoded message."
+            )
+
+        if validated and best:
+            # A CRC-verified decode replaces the blind guesses with facts.
+            fec_block = {
+                "candidate": best.get("candidate"),
+                "confidence": float(best.get("confidence", 0.0)),
+                "crc_pass": True,
+                "validated": True,
+                "params": best.get("params", {}),
+                "errors_corrected": int(best.get("errors_corrected", 0)),
+                "candidates": fec_res.get("candidates", []),
+            }
+            ilv_block = {
+                "candidate": (best.get("params") or {}).get("interleaver"),
+                "depth": ilv_res.get("depth"),
+                "confidence": float(best.get("confidence", 0.0)),
+                "validated": True,
+                "candidates": ilv_res.get("candidates", []),
+            }
+        else:
+            # No verified decode: report the capped heuristic scores only.
+            fec_block = {
+                "candidate": fec_res["candidate"],
+                "confidence": float(fec_res["confidence"]),
+                "crc_pass": fec_res["crc_pass"],
+                "validated": False,
+                "candidates": fec_res.get("candidates", []),
+            }
+            ilv_block = {
+                "candidate": ilv_res["candidate"],
+                "depth": ilv_res["depth"],
+                "confidence": float(ilv_res["confidence"]),
+                "validated": False,
+                "candidates": ilv_res.get("candidates", []),
+            }
 
         report = {
             "meta": {
@@ -265,6 +382,7 @@ def analyze_file(request: dict) -> dict:
                 "sample_rate": sample_rate,
                 "center_frequency": request.get("center_frequency"),
                 "iq_format": request.get("iq_format", "auto"),
+                "iq_format_used": iq_format,
             },
             "signal": {
                 "num_samples": len(samples),
@@ -288,20 +406,12 @@ def analyze_file(request: dict) -> dict:
                 "bits_preview": [int(b) for b in list(bits[:2048])],
             },
             "correlation": correlation,
-            # Candidate-score stubs only: the MVP never claims blind FEC /
-            # interleaver detection (see info.md §30 demo-defense lines).
-            "fec": {
-                "candidate": fec_res["candidate"],
-                "confidence": float(fec_res["confidence"]),
-                "crc_pass": fec_res["crc_pass"],
-                "candidates": fec_res.get("candidates", []),
-            },
-            "interleaving": {
-                "candidate": ilv_res["candidate"],
-                "depth": ilv_res["depth"],
-                "confidence": float(ilv_res["confidence"]),
-                "candidates": ilv_res.get("candidates", []),
-            },
+            "payload": payload_block,
+            # Candidate scores are blind heuristics (capped, crc_pass unknown);
+            # a CRC-verified decode is reported separately and only when it
+            # actually happened. See info.md §30 demo-defense lines.
+            "fec": fec_block,
+            "interleaving": ilv_block,
             # MVP hint for eye diagram: current synthetic generator uses
             # 1 sample/symbol for BPSK/QPSK/2-FSK.
             "display": {
@@ -323,6 +433,11 @@ def analyze_file(request: dict) -> dict:
             if len(bits) > 0:
                 save_bits(bits, str(bit_path))
                 report["demodulation"]["bitstream_file"] = str(bit_path)
+            decoded_block = report["payload"].get("decoded") or {}
+            if decoded_block.get("available"):
+                payload_path = out_dir / f"{file_path.stem}_payload.bin"
+                payload_path.write_bytes(bytes.fromhex(decoded_block.get("hex", "")))
+                report["payload"]["decoded"]["file"] = str(payload_path)
             save_report(report, str(rep_path))
         except Exception:
             pass

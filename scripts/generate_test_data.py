@@ -3,17 +3,34 @@
 Seeded (42) tone/BPSK/QPSK/2-FSK/qam16 ``.iq`` + ``.wav`` + ``*_bits.npy`` files
 into ``sample_data/`` (resolved relative to the repo root so the script
 works regardless of the caller's working directory).
+
+It also emits **coded captures**: full frames built by
+:mod:`rf_analyzer.core.framing` (``[sync][interleave(FEC(message))]``) with a
+controlled number of channel bit errors injected. These are what prove the
+error-correction and de-interleaving requirements end to end, and they ship
+with a ground-truth manifest (``coded_manifest.json``) so verification can be
+automated.
 """
 
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+# The coded captures import the project's own framing module, so make src/
+# importable when this script is run directly (pytest gets it from pytest.ini).
+if str(REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from rf_analyzer.core.framing import build_frame, modulate
+
 SAMPLE_RATE = 100_000
-OUTPUT_DIR = Path(__file__).resolve().parents[1] / "sample_data"
+OUTPUT_DIR = REPO_ROOT / "sample_data"
 
 
 def save_iq(path: Path, samples: np.ndarray):
@@ -141,6 +158,119 @@ def generate_qam16(
     return bits, symbols.astype(np.complex64)
 
 
+# ---- Coded captures: FEC + interleaving ground truth ----
+#
+# Each entry builds a real frame with rf_analyzer.core.framing and injects a
+# controlled number of channel bit errors into the coded region, so the
+# pipeline has to actually *correct* them rather than just parse a clean stream.
+CODED_CAPTURES = [
+    {
+        "name": "coded_uncoded",
+        "message": b"SIH26147 uncoded reference frame: CRC-16 framing only, no FEC.",
+        "fec": "none",
+        "interleaver": "none",
+        "modulation": "BPSK",
+        "errors": 0,
+    },
+    {
+        "name": "coded_conv",
+        "message": b"SIH26147 convolutional frame: K=7 r=1/2 Viterbi, Forney interleaver.",
+        "fec": "conv",
+        "interleaver": "convolutional",
+        "modulation": "BPSK",
+        "errors": 14,
+    },
+    {
+        "name": "coded_rs",
+        "message": b"SIH26147 Reed-Solomon frame: RS(255,223) over GF(256), block interleaver.",
+        "fec": "rs",
+        "interleaver": "block",
+        "modulation": "BPSK",
+        "errors": 12,
+    },
+    {
+        "name": "coded_ldpc",
+        "message": b"SIH26147 LDPC frame: (3,4)-regular min-sum belief propagation.",
+        "fec": "ldpc",
+        "interleaver": "pseudo-random-block",
+        "modulation": "BPSK",
+        "errors": 8,
+    },
+    {
+        "name": "coded_concatenated",
+        "message": b"SIH26147 concatenated frame: RS outer + convolutional inner, diagonal interleaver.",
+        "fec": "concatenated",
+        "interleaver": "diagonal",
+        "modulation": "QPSK",
+        "errors": 16,
+    },
+]
+
+
+def inject_bit_errors(
+    bits: np.ndarray, n_errors: int, seed: int, start: int = 0
+) -> tuple[np.ndarray, np.ndarray]:
+    """Flip ``n_errors`` random bit positions at or after ``start``.
+
+    Returns ``(corrupted_bits, flipped_indices)``. This models a channel that
+    introduces a controlled number of hard-decision errors, which is what makes
+    the FEC stage's correction capability observable and reproducible.
+    """
+    out = np.asarray(bits, dtype=np.uint8).copy()
+    if n_errors <= 0:
+        return out, np.array([], dtype=np.intp)
+    candidates = np.arange(start, out.size)
+    if candidates.size == 0:
+        return out, np.array([], dtype=np.intp)
+    n = min(n_errors, candidates.size)
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(candidates, size=n, replace=False)
+    out[idx] ^= 1
+    return out, np.sort(idx)
+
+
+def generate_coded_captures() -> list[dict]:
+    """Build every coded capture, write the ``.iq`` files and return the manifest."""
+    manifest: list[dict] = []
+    for i, spec in enumerate(CODED_CAPTURES):
+        frame = build_frame(
+            spec["message"],
+            fec=spec["fec"],
+            interleaver=spec["interleaver"],
+        )
+        sync_len = int(frame["sync_bits"].size)
+        corrupted, flipped = inject_bit_errors(
+            frame["bits"], spec["errors"], seed=1000 + i, start=sync_len
+        )
+        samples = modulate(corrupted, spec["modulation"])
+        path = OUTPUT_DIR / f"{spec['name']}.iq"
+        save_iq(path, samples)
+
+        manifest.append(
+            {
+                "file": path.name,
+                "sample_rate": SAMPLE_RATE,
+                "iq_format": "complex64",
+                "sync_word": "0x1ACFFC1D",
+                "fec": spec["fec"],
+                "interleaver": spec["interleaver"],
+                "modulation": spec["modulation"],
+                "frame_bits": int(frame["frame_bits"]),
+                "total_bits": int(frame["bits"].size),
+                "injected_errors": int(flipped.size),
+                "message_utf8": spec["message"].decode("utf-8"),
+                "message_hex": spec["message"].hex(),
+                "message_bytes": len(spec["message"]),
+            }
+        )
+        print(
+            f"  {path.name:24s} {spec['fec']:13s} {spec['interleaver']:20s} "
+            f"{spec['modulation']:7s} frame={frame['frame_bits']:6d} bits  "
+            f"errors={flipped.size}"
+        )
+    return manifest
+
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     np.random.seed(42)
@@ -179,7 +309,25 @@ def main():
     save_wav_iq(OUTPUT_DIR / "qam16.wav", qam_samples, SAMPLE_RATE)
     np.save(OUTPUT_DIR / "qam16_bits.npy", qam_bits)
 
+    # Coded captures: real FEC + interleaving with injected channel errors.
+    print("Generating coded captures (FEC + interleaving ground truth):")
+    manifest = generate_coded_captures()
+    manifest_path = OUTPUT_DIR / "coded_manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "generated_by": "scripts/generate_test_data.py",
+                "seed": 42,
+                "sample_rate": SAMPLE_RATE,
+                "captures": manifest,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
     print("Synthetic test data generated in sample_data/")
+    print(f"Coded manifest written to {manifest_path}")
 
 
 if __name__ == "__main__":

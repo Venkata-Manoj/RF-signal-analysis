@@ -42,6 +42,8 @@ DEFAULT_COLS = 12
 DEFAULT_DEPTH = 8
 DEFAULT_SPACING = 1
 DEFAULT_SEED = 42
+#: Sub-block size for the length-robust pseudo-random variant.
+DEFAULT_RANDOM_BLOCK = 256
 
 
 def _pad_to(bits: np.ndarray, block: int) -> np.ndarray:
@@ -164,19 +166,60 @@ def _random_permutation(n: int, seed: int) -> np.ndarray:
     return rng.permutation(n)
 
 
-def interleave_pseudo_random(bits: np.ndarray, seed: int = DEFAULT_SEED):
-    """Seeded Fisher-Yates permutation interleaver."""
+def _random_permutation_blocks(n: int, seed: int, block: int) -> tuple[np.ndarray, int]:
+    """Permutation applied independently inside each ``block``-sized chunk.
+
+    Returns the flat permutation and the padded length. Within-block
+    permutations are seeded per block index so the scheme stays deterministic
+    while every block still gets a different shuffle.
+    """
+    padded = ((n + block - 1) // block) * block
+    n_blocks = padded // block
+    perm = np.empty(padded, dtype=np.int64)
+    base = _random_permutation(block, seed)
+    for i in range(n_blocks):
+        # Rotate the base permutation per block: cheap, deterministic, and
+        # decorrelates neighbouring blocks without a second RNG draw.
+        perm[i * block : (i + 1) * block] = i * block + np.roll(base, i % block)
+    return perm, padded
+
+
+def interleave_pseudo_random(
+    bits: np.ndarray, seed: int = DEFAULT_SEED, block: int | None = None
+):
+    """Seeded Fisher-Yates permutation interleaver.
+
+    ``block=None`` (default) permutes the whole stream in one shot — exact, but
+    only invertible when the receiver knows the stream length. Passing ``block``
+    permutes each fixed-size chunk independently (the usual sub-block
+    arrangement in real standards), which stays invertible even when the
+    capture continues past the end of the frame.
+    """
     arr = np.asarray(bits, dtype=np.uint8).ravel()
     if arr.size == 0:
         return arr
+    if block is not None:
+        if block < 2:
+            raise ValueError("block must be >= 2")
+        perm, padded = _random_permutation_blocks(arr.size, seed, block)
+        out = np.zeros(padded, dtype=np.uint8)
+        out[perm] = _pad_to(arr, padded)[:padded]
+        return out
     return arr[_random_permutation(arr.size, seed)]
 
 
-def deinterleave_pseudo_random(bits: np.ndarray, seed: int = DEFAULT_SEED):
-    """Inverse of :func:`interleave_pseudo_random` (same seed)."""
+def deinterleave_pseudo_random(
+    bits: np.ndarray, seed: int = DEFAULT_SEED, block: int | None = None
+):
+    """Inverse of :func:`interleave_pseudo_random` (same seed and block)."""
     arr = np.asarray(bits, dtype=np.uint8).ravel()
     if arr.size == 0:
         return arr
+    if block is not None:
+        if block < 2:
+            raise ValueError("block must be >= 2")
+        perm, padded = _random_permutation_blocks(arr.size, seed, block)
+        return _pad_to(arr, padded)[:padded][perm]
     perm = _random_permutation(arr.size, seed)
     inverse = np.empty_like(perm)
     inverse[perm] = np.arange(perm.size)
@@ -215,13 +258,23 @@ def deinterleaver_hypotheses(
     depth: int = DEFAULT_DEPTH,
     spacing: int = DEFAULT_SPACING,
     seed: int = DEFAULT_SEED,
+    random_block: int = DEFAULT_RANDOM_BLOCK,
 ) -> dict[str, Callable[[np.ndarray], np.ndarray]]:
-    """Named de-interleaver candidates for the hypothesis search."""
+    """Named de-interleaver candidates for the hypothesis search.
+
+    ``pseudo-random`` permutes the whole stream (correct when the capture ends
+    exactly at the frame boundary); ``pseudo-random-block`` permutes fixed-size
+    sub-blocks, which additionally survives trailing samples. Both are offered
+    because the receiver cannot know in advance which one the transmitter used.
+    """
     return {
         "block": lambda b: deinterleave_block(b, rows, cols),
         "convolutional": lambda b: deinterleave_convolutional(b, depth, spacing),
         "diagonal": lambda b: deinterleave_diagonal(b, rows, cols),
         "pseudo-random": lambda b: deinterleave_pseudo_random(b, seed),
+        "pseudo-random-block": lambda b: deinterleave_pseudo_random(
+            b, seed, random_block
+        ),
     }
 
 
@@ -231,12 +284,16 @@ def search_interleaver(
     start_offset: int = 0,
     max_bits: int = 8192,
     time_budget_s: float = 5.0,
+    frame_bits: int | None = None,
     **params,
 ) -> dict:
     """Try each de-interleaver followed by every FEC decoder, CRC-verified.
 
     Delegates the combinatorial search to :func:`fec.decode_hypotheses` and
     reports which interleaver (if any) produced a CRC-valid payload.
+
+    ``frame_bits`` optionally pins the coded region to one frame; see
+    :func:`fec.decode_hypotheses`.
 
     Returns:
         The :func:`fec.decode_hypotheses` result plus ``interleaver`` (the
@@ -249,6 +306,7 @@ def search_interleaver(
         deinterleavers=hypotheses,
         max_bits=max_bits,
         time_budget_s=time_budget_s,
+        frame_bits=frame_bits,
     )
     best = result.get("best")
     winner = best["params"].get("interleaver") if best else None

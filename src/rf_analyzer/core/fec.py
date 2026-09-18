@@ -106,15 +106,59 @@ def crc16_check(framed: bytes) -> tuple[bool, bytes]:
     return crc16_ccitt(payload) == expected, payload
 
 
+def _crc16_prefix(buf: bytes) -> list[int]:
+    """``out[i] == crc16_ccitt(buf[:i])`` — one O(n) pass shared by the scanners."""
+    running = [0xFFFF] * (len(buf) + 1)
+    crc = 0xFFFF
+    for i, byte in enumerate(buf):
+        crc = _crc16_update(crc, byte)
+        running[i + 1] = crc
+    return running
+
+
+def _candidate_ends(buf: bytes, min_payload: int, window: int | None) -> list[int]:
+    """Candidate CRC framing end positions, shortest payload first.
+
+    Why shortest-first: the only *deterministic* false positive in this framing
+    scheme is a framing one byte too long. For CRC-16/CCITT-FALSE the identity
+    ``crc16(M || C_hi) == C_lo << 8`` always holds (``C_lo`` is one byte, so the
+    eight shift steps never reach bit 15 and never reduce). Whenever the byte
+    following a real frame is ``0x00``, the longer framing ``[M][C_hi]`` with
+    ``[C_lo][0x00]`` as its CRC therefore validates too — and it is *longer*
+    than the truth, so a longest-first scan picks it every time. Scanning from
+    the shortest payload up removes that systematic error and replaces it with
+    the bounded 1/65536-per-position chance of a random coincidence.
+
+    ``window`` restricts the search to positions near the end of the buffer,
+    which is where a frame ends once the zero fill a block interleaver appends
+    has been accounted for. ``None`` scans the whole buffer.
+    """
+    n = len(buf)
+    lo = min_payload + 2
+    if window is not None:
+        lo = max(lo, n - window)
+    ends = list(range(lo, n + 1))
+
+    # Safety net: the padding-stripped end is the structurally cleanest anchor,
+    # so keep it as a candidate even when it falls outside a narrow window.
+    zero_end = n
+    while zero_end > 0 and buf[zero_end - 1] == 0:
+        zero_end -= 1
+    if zero_end >= min_payload + 2 and zero_end not in ends:
+        ends.append(zero_end)
+    return ends
+
+
 def scan_crc16(buf: bytes, min_payload: int = 1) -> tuple[bool, bytes]:
     """Find a valid CRC-16 framing *anywhere* in ``buf``.
 
     Needed when the payload length is unknown (e.g. a block-coded stream that
     was zero-padded to a fixed block size): every candidate split point is
-    tested and the longest payload with a matching trailing CRC-16 wins.
+    tested and the shortest payload with a matching trailing CRC-16 wins (see
+    :func:`_candidate_ends` for why shortest is the right tie-break).
 
-    Runs in a single O(n) pass by accumulating the running CRC of every
-    prefix, so the whole hypothesis search stays fast.
+    Runs in a single O(n) CRC pass over every prefix, so the whole hypothesis
+    search stays fast.
 
     A 16-bit check has a 1/65536 false-positive rate per position, so callers
     should combine this with an independent structural check (e.g. LDPC parity
@@ -125,14 +169,37 @@ def scan_crc16(buf: bytes, min_payload: int = 1) -> tuple[bool, bytes]:
     if n < min_payload + 2:
         return False, b""
 
-    # running[i] == crc16_ccitt(buf[:i])
-    running = [0xFFFF] * (n + 1)
-    crc = 0xFFFF
-    for i, byte in enumerate(buf):
-        crc = _crc16_update(crc, byte)
-        running[i + 1] = crc
+    running = _crc16_prefix(buf)
+    for end in _candidate_ends(buf, min_payload, None):
+        expected = (buf[end - 2] << 8) | buf[end - 1]
+        if running[end - 2] == expected:
+            return True, buf[: end - 2]
+    return False, b""
 
-    for end in range(n, min_payload + 2, -1):
+
+def scan_crc16_strict(
+    buf: bytes, min_payload: int = 4, max_pad: int = 32
+) -> tuple[bool, bytes]:
+    """CRC-16 framing anchored near the *end* of the buffer.
+
+    A free scan (:func:`scan_crc16`) has a ~n/65536 chance of matching by luck,
+    which is far too high to report as a decoded payload on its own. This
+    variant only considers positions within ``max_pad`` bytes of the buffer end,
+    which is where the frame really ends once the zero fill a block interleaver
+    appends has been accounted for. Use it whenever no independent structural
+    check (valid RS codeword, LDPC syndrome) backs the CRC up.
+
+    Keeping the search inside a short window holds the false-positive rate near
+    ``max_pad / 65536`` while still tolerating padding whose last byte happens to
+    be non-zero.
+    """
+    buf = bytes(buf)
+    n = len(buf)
+    if n < min_payload + 2:
+        return False, b""
+
+    running = _crc16_prefix(buf)
+    for end in _candidate_ends(buf, min_payload, max_pad):
         expected = (buf[end - 2] << 8) | buf[end - 1]
         if running[end - 2] == expected:
             return True, buf[: end - 2]
@@ -567,6 +634,43 @@ def ldpc_syndrome_ok(bits: np.ndarray, h: np.ndarray | None = None) -> bool:
     return bool(np.all((h @ c) % 2 == 0))
 
 
+def _edge_structure(h: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Flatten ``H`` into a padded ``(m, dc_max)`` edge table plus a validity mask.
+
+    The padded layout lets every check-node update be expressed as a whole-array
+    NumPy operation instead of a per-edge loop, which is what keeps belief
+    propagation inside the §NFR-03 time budget on real captures.
+    """
+    m = h.shape[0]
+    rows = [np.flatnonzero(h[c]) for c in range(m)]
+    dc_max = max((r.size for r in rows), default=0)
+    if dc_max == 0:
+        return np.zeros((m, 0), dtype=np.intp), np.zeros((m, 0), dtype=bool)
+    edge_v = np.zeros((m, dc_max), dtype=np.intp)
+    valid = np.zeros((m, dc_max), dtype=bool)
+    for c, r in enumerate(rows):
+        edge_v[c, : r.size] = r
+        valid[c, : r.size] = True
+    return edge_v, valid
+
+
+#: Precomputed edge table for the shared matrix. Building it once at import
+#: time keeps the per-block decode allocation-free.
+_LDPC_EDGES: tuple[np.ndarray, np.ndarray] = _edge_structure(LDPC_H)
+
+
+def _cached_edges(h: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return the edge table for ``h``.
+
+    Only the shared ``LDPC_H`` is served from the module cache (it is a
+    long-lived constant); a caller-supplied matrix is rebuilt each call so the
+    cache can never go stale against a recycled object identity.
+    """
+    if h is LDPC_H:
+        return _LDPC_EDGES
+    return _edge_structure(h)
+
+
 def ldpc_decode(
     bits: np.ndarray,
     h: np.ndarray | None = None,
@@ -579,11 +683,15 @@ def ldpc_decode(
     ``p_err`` is the assumed BSC crossover probability used to seed the
     channel LLRs. Returns the decoded codeword (``[u | p]``); check validity
     with :func:`ldpc_syndrome_ok`.
+
+    Fully vectorized: the check-node min-sum is computed from a per-row sort
+    (the two smallest magnitudes decide every outgoing message) and the
+    variable-node sum uses ``bincount``, so no per-edge Python loop remains.
     """
     h = LDPC_H if h is None else h
     rx = np.asarray(bits, dtype=np.uint8).ravel()
     n = h.shape[1]
-    m = h.shape[0]
+
     if rx.size != n:
         raise ValueError(f"LDPC expects exactly {n} bits, got {rx.size}")
 
@@ -591,44 +699,38 @@ def ldpc_decode(
     llr_mag = float(np.log((1.0 - p_err) / p_err))
     llr0 = np.where(rx == 0, llr_mag, -llr_mag).astype(np.float64)
 
-    checks = [np.flatnonzero(h[c]) for c in range(m)]
-    var_edges: list[list[tuple[int, int]]] = [[] for _ in range(n)]
-    for c, vs in enumerate(checks):
-        for i, v in enumerate(vs):
-            var_edges[v].append((c, i))
+    edge_v, valid = _cached_edges(h)
+    if edge_v.shape[1] == 0:
+        return (llr0 < 0).astype(np.uint8)
+    flat_v = edge_v.ravel()
 
-    c2v = [np.zeros(vs.size, dtype=np.float64) for vs in checks]
-    v2c = [llr0[vs].copy() for vs in checks]
+    v2c = np.where(valid, llr0[edge_v], 0.0)
     total = llr0.copy()
 
     for _ in range(max_iter):
-        # ---- check node update (min-sum with self-exclusion) ----
-        for c, _vs in enumerate(checks):
-            msg = v2c[c]
-            if msg.size == 1:
-                c2v[c][0] = alpha * msg[0]
-                continue
-            abs_msg = np.abs(msg)
-            signs = np.where(msg >= 0, 1.0, -1.0)
-            for i in range(msg.size):
-                others_mag = np.delete(abs_msg, i)
-                others_sign = np.delete(signs, i)
-                c2v[c][i] = (
-                    alpha * float(np.prod(others_sign)) * float(others_mag.min())
-                )
+        # ---- check node update: normalized min-sum, self-excluded ----
+        abs_msg = np.where(valid, np.abs(v2c), np.inf)
+        signs = np.where(valid, np.where(v2c >= 0.0, 1.0, -1.0), 1.0)
+        total_sign = np.prod(signs, axis=1, keepdims=True)
+
+        order = np.argsort(abs_msg, axis=1, kind="stable")
+        sorted_abs = np.take_along_axis(abs_msg, order, axis=1)
+        min1 = sorted_abs[:, 0:1]
+        min2 = sorted_abs[:, 1:2] if sorted_abs.shape[1] > 1 else min1
+        # The smallest-magnitude edge must use the *second* smallest; every
+        # other edge uses the smallest.
+        smallest = np.zeros_like(valid)
+        np.put_along_axis(smallest, order[:, 0:1], True, axis=1)
+        others_mag = np.where(smallest, min2, min1)
+
+        # prod(signs except i) == total_sign * signs[i] because signs are +/-1.
+        c2v = np.where(valid, alpha * total_sign * signs * others_mag, 0.0)
 
         # ---- variable node update ----
-        for v in range(n):
-            edges = var_edges[v]
-            if not edges:
-                total[v] = llr0[v]
-                continue
-            s = llr0[v]
-            for c, i in edges:
-                s += c2v[c][i]
-            total[v] = s
-            for c, i in edges:
-                v2c[c][i] = s - c2v[c][i]
+        # c2v is already zero on padding edges, so a plain weighted bincount
+        # gives sum(c2v) per variable node.
+        total = llr0 + np.bincount(flat_v, weights=c2v.ravel(), minlength=n)
+        v2c = np.where(valid, total[edge_v] - c2v, 0.0)
 
         decision = (total < 0).astype(np.uint8)
         if bool(np.all((h @ decision) % 2 == 0)):
@@ -778,6 +880,11 @@ def score_fec_candidates(bits: np.ndarray) -> dict:
 VALIDATED_CONFIDENCE = 0.99
 # RS(255,223) is the named requirement; 16 is the common shortened variant.
 RS_NSYM_HYPOTHESES = (32, 16)
+#: A single RS codeword over GF(256) cannot exceed 255 symbols. Streams longer
+#: than this can never be one codeword, so the RS hypotheses are skipped — a
+#: large speedup on long captures, and a principled rejection rather than a
+#: heuristic one.
+RS_MAX_CODEWORD = 255
 
 
 def _attempt(
@@ -822,6 +929,7 @@ def decode_hypotheses(
     deinterleavers: dict[str, Interleaver] | None = None,
     max_bits: int = 8192,
     time_budget_s: float = 3.0,
+    frame_bits: int | None = None,
 ) -> dict:
     """Try real FEC decoders on a hypothesis basis, validated by CRC-16.
 
@@ -841,6 +949,11 @@ def decode_hypotheses(
         max_bits: Cap on how many bits are examined (keeps 1M-sample captures
             inside the §NFR-03 time budget).
         time_budget_s: Wall-clock ceiling for the whole search.
+        frame_bits: Length of the coded region after the sync word. Supplying it
+            truncates the stream to exactly one frame, which is what a receiver
+            needs when the capture continues past the end of the burst. Left as
+            ``None`` the search assumes the capture ends at the frame boundary
+            (a single-burst capture).
 
     Returns:
         ``{"attempts": [...], "validated": bool, "best": dict|None,
@@ -850,6 +963,8 @@ def decode_hypotheses(
     stream = np.asarray(bits, dtype=np.uint8).ravel()
     if start_offset > 0:
         stream = stream[min(int(start_offset), stream.size) :]
+    if frame_bits is not None and 0 < int(frame_bits) < stream.size:
+        stream = stream[: int(frame_bits)]
     if stream.size > max_bits:
         stream = stream[:max_bits]
 
@@ -884,10 +999,27 @@ def decode_hypotheses(
     # needs no trellis search, Viterbi-based schemes come last.
     hypotheses: list[tuple[str, dict, Callable[[], dict]]] = []
 
+    def _raw_attempt(src: np.ndarray) -> Callable[[], dict]:
+        """Uncoded frame: the bits are already the CRC-16-framed message."""
+
+        def run() -> dict:
+            # No independent structural check exists here, so only accept a
+            # framing anchored to the end of the (padding-stripped) buffer.
+            ok, payload = scan_crc16_strict(bits_to_bytes(src))
+            return {"crc_pass": ok, "payload": payload, "errors_corrected": 0}
+
+        return run
+
     def _rs_attempt(src: np.ndarray, nsym: int) -> Callable[[], dict]:
         def run() -> dict:
             if src.size % 8 != 0:
                 return {"crc_pass": False, "payload": b"", "error": "not byte-aligned"}
+            if src.size // 8 > RS_MAX_CODEWORD:
+                return {
+                    "crc_pass": False,
+                    "payload": b"",
+                    "error": f"longer than RS_MAX_CODEWORD ({RS_MAX_CODEWORD}) bytes",
+                }
             word = bits_to_bytes(src)
             try:
                 corrected, n_err = rs_decode(word, nsym)
@@ -905,15 +1037,32 @@ def decode_hypotheses(
     def _conv_attempt(src: np.ndarray) -> Callable[[], dict]:
         def run() -> dict:
             info = viterbi_decode(src)
+            # Re-encoding the decoded path and diffing against the received
+            # symbols counts exactly the hard bits Viterbi had to flip, which
+            # is the observable evidence that error correction happened.
+            reference = conv_encode(info, terminate=False)
+            n_err = int(np.sum(src[: reference.size] != reference))
             if info.size > CONV_TAIL:
                 info = info[: info.size - CONV_TAIL]
-            ok, payload = scan_crc16(bits_to_bytes(info))
-            return {"crc_pass": ok, "payload": payload, "errors_corrected": 0}
+            # Viterbi leaves no structural signature of its own, so require the
+            # CRC framing to be anchored to the end of the info bits.
+            ok, payload = scan_crc16_strict(bits_to_bytes(info))
+            return {"crc_pass": ok, "payload": payload, "errors_corrected": n_err}
 
         return run
 
     def _concat_attempt(src: np.ndarray, nsym: int) -> Callable[[], dict]:
         def run() -> dict:
+            # Bound the RS word the Viterbi stage will produce: if it cannot fit
+            # in one RS codeword the hypothesis is impossible, so reject it
+            # before paying for the trellis search.
+            info_bits = src.size // 2 - CONV_TAIL
+            if info_bits <= 0 or (info_bits + 7) // 8 > RS_MAX_CODEWORD:
+                return {
+                    "crc_pass": False,
+                    "payload": b"",
+                    "error": f"inner word exceeds RS_MAX_CODEWORD ({RS_MAX_CODEWORD}) bytes",
+                }
             res = concatenated_decode(src, nsym=nsym)
             return {
                 "crc_pass": res["crc_pass"],
@@ -952,6 +1101,14 @@ def decode_hypotheses(
     for name, src in sources.items():
         if src.size == 0:
             continue
+        # Cheapest hypothesis first: no FEC at all, just CRC-16 framing.
+        hypotheses.append(
+            (
+                "None (CRC-16 only)",
+                {"interleaver": name, "nsym": None},
+                _raw_attempt(src),
+            )
+        )
         for nsym in RS_NSYM_HYPOTHESES:
             hypotheses.append(
                 (
@@ -969,13 +1126,10 @@ def decode_hypotheses(
                     ldpc_fn,
                 )
             )
-        hypotheses.append(
-            (
-                "Convolutional r=1/2 K=7",
-                {"interleaver": name, "nsym": None},
-                _conv_attempt(src),
-            )
-        )
+        # Concatenated is tried *before* the inner code alone: a Viterbi decode
+        # of a concatenated stream yields the RS codeword, whose embedded CRC
+        # would otherwise let the bare convolutional hypothesis claim a payload
+        # that the outer RS stage actually protected (a mislabel, not a miss).
         for nsym in RS_NSYM_HYPOTHESES:
             hypotheses.append(
                 (
@@ -984,6 +1138,13 @@ def decode_hypotheses(
                     _concat_attempt(src, nsym),
                 )
             )
+        hypotheses.append(
+            (
+                "Convolutional r=1/2 K=7",
+                {"interleaver": name, "nsym": None},
+                _conv_attempt(src),
+            )
+        )
 
     best: dict | None = None
     started = time.monotonic()
