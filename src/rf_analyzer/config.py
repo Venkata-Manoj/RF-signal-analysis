@@ -58,3 +58,14 @@ FSK_MAX_RECONSTRUCTION_RESIDUAL = 0.15
 FSK_SYMBOL_DURATION_S = 0.001
 FSK_FREQ_LOW_HZ = -5000.0
 FSK_FREQ_HIGH_HZ = 5000.0
+
+# Confidence reported for an *estimated* 2-FSK classification that the symbol-
+# period recovery could not corroborate.
+#
+# The classifier's FSK test is "low instantaneous-frequency variance", which is
+# not specific to FSK: measured on the bundled samples it also fires for an
+# unmodulated tone (var 1e-16), narrowband audio (0.18) and speech (0.79),
+# against 0.097 for a genuine 2-FSK burst. Recovering a symbol period is
+# independent evidence; failing to recover one does not prove the label wrong,
+# so the label is kept and its confidence is capped instead.
+MODULATION_UNCORROBORATED_CONFIDENCE = 0.35

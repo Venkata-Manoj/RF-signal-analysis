@@ -30,6 +30,7 @@ from rf_analyzer.config import (
     MODULATION_FIT_CANDIDATES,
     MODULATION_FIT_EVM_WARN,
     MODULATION_FIT_MAX_SAMPLES,
+    MODULATION_UNCORROBORATED_CONFIDENCE,
     PAYLOAD_PREVIEW_BYTES,
     TOOL_NAME,
     VERSION,
@@ -264,6 +265,9 @@ def analyze_file(request: dict) -> dict:
         # in this MVP are one sample per symbol by construction; 2-FSK is not,
         # so its period is recovered from the instantaneous frequency below.
         samples_per_symbol = 1
+        # Whether the estimated modulation was independently corroborated.
+        # None = the check does not apply to this mode.
+        corroborated: bool | None = None
 
         if mode == "BPSK":
             bits = demod_bpsk(samples)
@@ -278,6 +282,15 @@ def analyze_file(request: dict) -> dict:
             # the documented naive behaviour is preserved.
             samples_per_symbol = estimate_fsk_symbol_period(samples)
             bits = demod_2fsk(samples, samples_per_symbol)
+            # A recovered period is independent evidence that this really is
+            # constant-envelope FSK: the estimator was measured to recover the
+            # period exactly for every FSK case tried and to decline for BPSK,
+            # QPSK, QAM, AWGN, a tone and several audio recordings. Failing to
+            # recover one does not prove the label wrong, but it does mean the
+            # label is uncorroborated, and the classifier's FSK test is only a
+            # narrowband test (it also fires for an unmodulated tone and for
+            # music), so the tool must not stay confident about it.
+            corroborated = samples_per_symbol > 1
             if samples_per_symbol > 1:
                 # The |x|^2 spectral-line symbol-rate estimate assumes a
                 # non-constant envelope and is meaningless for constant-modulus
@@ -292,6 +305,16 @@ def analyze_file(request: dict) -> dict:
                     "sample, so the bit stream is oversampled by the unknown "
                     "number of samples per symbol."
                 )
+                if requested == "AUTO":
+                    # Only downgrade an *estimate*. If the user asked for 2-FSK
+                    # explicitly, report what was found and leave their choice
+                    # alone; the warning above already carries the caveat.
+                    confidence = min(confidence, MODULATION_UNCORROBORATED_CONFIDENCE)
+                    warnings.append(
+                        "The 2-FSK classification is uncorroborated, so its "
+                        f"confidence is reported as {confidence:.2f} rather "
+                        "than as a confident estimate."
+                    )
         elif mode == "16-QAM":
             bits = demod_qam16(samples)
         else:  # pragma: no cover - defensive; mode is normalized above
@@ -604,6 +627,11 @@ def analyze_file(request: dict) -> dict:
                 "estimated_type": estimated_type,
                 "confidence": float(confidence),
                 "alternatives": list(alternatives),
+                # True = independently corroborated by the symbol-period
+                # recovery; False = not corroborated (confidence is capped, see
+                # MODULATION_UNCORROBORATED_CONFIDENCE); None = the check does
+                # not apply to this mode.
+                "corroborated": corroborated,
             },
             "demodulation": {
                 "mode": mode,

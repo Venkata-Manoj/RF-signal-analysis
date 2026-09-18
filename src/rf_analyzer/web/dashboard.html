@@ -894,6 +894,8 @@ function renderStats(report, summary) {
   const cards = [
     {
       k: "Modulation", v: pick(summary, "Modulation"),
+      // "Modulation confidence" already carries an "(uncorroborated)" marker
+      // when the FSK symbol-period recovery could not confirm the label.
       sub: "confidence " + pick(summary, "Modulation confidence"),
     },
     {

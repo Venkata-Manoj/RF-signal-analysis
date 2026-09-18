@@ -300,7 +300,17 @@ def summary_rows(report: dict[str, Any]) -> list[dict[str, str]]:
         {"label": "Samples", "value": _fmt(sig.get("num_samples"))},
         {"label": "Duration", "value": _fmt(sig.get("duration_seconds"), 6, " s")},
         {"label": "Modulation", "value": str(mod.get("estimated_type", "--"))},
-        {"label": "Modulation confidence", "value": _fmt(mod.get("confidence"))},
+        {
+            # An uncorroborated 2-FSK estimate keeps its label but loses its
+            # confidence, so say which it is rather than showing a bare number
+            # that looks like a normal estimate.
+            "label": "Modulation confidence",
+            "value": (
+                f"{_fmt(mod.get('confidence'))} (uncorroborated)"
+                if mod.get("corroborated") is False
+                else _fmt(mod.get("confidence"))
+            ),
+        },
         {"label": "Demod mode", "value": str(dem.get("mode", "--"))},
         {"label": "Demodulated bits", "value": _fmt(dem.get("num_bits"))},
         {
