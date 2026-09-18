@@ -13,6 +13,7 @@ from the bit stream alone.
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -269,6 +270,192 @@ def check_batch_exports(checks: Checks) -> None:
             (out / name).unlink(missing_ok=True)
 
 
+def check_report_schema(checks: Checks) -> None:
+    """Every report must carry the info.md §13 keys plus the additive blocks.
+
+    Success and error reports must expose the *same* top-level shape so a
+    consumer can read a field without first checking which branch produced it.
+    """
+    from rf_analyzer.pipeline import analyze_file
+
+    ok = analyze_file(
+        {
+            "file_path": str(ROOT / "sample_data" / "bpsk.iq"),
+            "sample_rate": 100000,
+            "iq_format": "complex64",
+            "modulation": "auto",
+            "sync_word": "0x1ACFFC1D",
+        }
+    )
+    missing = [k for k in REQUIRED_REPORT_KEYS if k not in ok]
+    checks.check(
+        "report has every §13 key", not missing, f"missing={missing or 'none'}"
+    )
+
+    additive = ("payload", "display", "quality")
+    absent = [k for k in additive if k not in ok]
+    checks.check(
+        "report has the additive blocks (payload/display/quality)",
+        not absent,
+        f"missing={absent or 'none'}",
+    )
+
+    bad = analyze_file({"file_path": str(ROOT / "sample_data" / "nope.xyz")})
+    checks.check(
+        "unsupported suffix yields an error report, not an exception",
+        bool(bad.get("errors")),
+        f"errors={bad.get('errors')}",
+    )
+    checks.check(
+        "error and success reports share one top-level shape",
+        set(bad) == set(ok),
+        f"only_in_error={sorted(set(bad) - set(ok))} "
+        f"only_in_success={sorted(set(ok) - set(bad))}",
+    )
+
+    # The on-disk report is consumed outside Python (the dashboard, any JS
+    # tooling), and JSON.parse rejects the Infinity/NaN tokens json.dump
+    # emits by default.
+    disk = ROOT / "output" / "bpsk_report.json"
+    if disk.is_file():
+        text = disk.read_text(encoding="utf-8")
+        try:
+            json.loads(text, parse_constant=_reject_constant)
+            strict_ok, detail = True, f"{len(text)} bytes"
+        except ValueError as exc:
+            strict_ok, detail = False, str(exc)
+        checks.check("on-disk report is strict JSON", strict_ok, detail)
+
+
+def _reject_constant(token: str):
+    """json.loads hook that rejects non-finite tokens, as a browser does."""
+    raise ValueError(f"non-finite JSON token: {token}")
+
+
+def check_dashboard(checks: Checks) -> None:
+    """The zero-install web dashboard must serve its page and analyse a capture.
+
+    The server is started in-process on an ephemeral localhost port so the
+    check exercises the real HTTP path (routing, query parsing, pipeline call,
+    plot assembly) without needing a browser or a fixed port.
+    """
+    import importlib.util
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    spec = importlib.util.spec_from_file_location(
+        "serve_dashboard", ROOT / "scripts" / "serve_dashboard.py"
+    )
+    if spec is None or spec.loader is None:
+        checks.check("dashboard server module loads", False, "import spec unavailable")
+        return
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    page = module.PAGE_PATH
+    checks.check(
+        "dashboard page exists",
+        page.is_file(),
+        f"{page.stat().st_size} bytes" if page.is_file() else str(page),
+    )
+    if page.is_file():
+        html = page.read_text(encoding="utf-8")
+        checks.check(
+            "dashboard page is self-contained",
+            "<script src=" not in html
+            and "https://" not in html
+            and "<link" not in html,
+            "no CDN, no external fetches",
+        )
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), module.DashboardHandler)
+    httpd.daemon_threads = True
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{port}"
+        with urllib.request.urlopen(base + "/api/samples", timeout=30) as resp:
+            samples = json.loads(resp.read())
+        captures = samples.get("captures", [])
+        checks.check(
+            "dashboard lists bundled captures",
+            len(captures) >= 6,
+            f"{len(captures)}",
+        )
+
+        url = (
+            f"{base}/api/analyze?name=coded_rs.iq&sample_rate=100000"
+            "&iq_format=auto&modulation=auto&sync_word=0x1ACFFC1D&decode=1"
+        )
+        with urllib.request.urlopen(url, timeout=180) as resp:
+            raw_body = resp.read()
+        # A browser's JSON.parse rejects `Infinity`/`NaN`, so the response must
+        # be strict JSON -- this is how the MER=inf bug surfaced.
+        body_text = raw_body.decode("utf-8")
+        checks.check(
+            "dashboard response is strict JSON (no Infinity/NaN)",
+            "Infinity" not in body_text and "NaN" not in body_text,
+            f"{len(raw_body)} bytes",
+        )
+        payload = json.loads(body_text, parse_constant=_reject_constant)
+        report = payload.get("report", {})
+        decoded = (report.get("payload") or {}).get("decoded") or {}
+        checks.check(
+            "dashboard decodes a coded capture",
+            bool(decoded.get("available")) and decoded.get("crc_pass") is True,
+            f"scheme={decoded.get('scheme')} bytes={decoded.get('bytes')}",
+        )
+
+        plots = payload.get("plots") or {}
+        checks.check(
+            "dashboard returns every plot",
+            set(plots) == {"constellation", "psd", "waterfall", "eye", "time"},
+            ",".join(sorted(plots)),
+        )
+        quality = report.get("quality") or {}
+        evm = quality.get("evm_percent")
+        # mer_db is None when the error vector is exactly zero (a noiseless
+        # synthetic capture), because the ratio is unbounded -- and `inf`
+        # would not be valid JSON. Either a finite MER or None is correct.
+        checks.check(
+            "dashboard reports constellation quality (EVM/MER)",
+            quality.get("applicable") is True
+            and evm is not None
+            and math.isfinite(float(evm))
+            and (
+                quality.get("mer_db") is None or math.isfinite(float(quality["mer_db"]))
+            ),
+            f"EVM={evm} MER={quality.get('mer_db')}",
+        )
+
+        # Leaving the sync word out must still frame the capture (default
+        # probe) -- and the assumption must be flagged, not hidden.
+        url = f"{base}/api/analyze?name=coded_conv.iq&sample_rate=100000&iq_format=complex64"
+        with urllib.request.urlopen(url, timeout=180) as resp:
+            probe = json.loads(resp.read())
+        cor = probe.get("report", {}).get("correlation", {})
+        checks.check(
+            "dashboard frames a capture with no sync word given",
+            cor.get("assumed") is True and cor.get("detected") is True,
+            f"assumed={cor.get('assumed')} score={cor.get('score')}",
+        )
+        checks.check(
+            "dashboard still decodes without a sync word",
+            bool(
+                (
+                    (probe.get("report", {}).get("payload") or {}).get("decoded") or {}
+                ).get("available")
+            ),
+            "default probe recovered the payload",
+        )
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
 def main() -> int:
     print("=== RF Analyzer MVP Verification ===")
 
@@ -278,7 +465,7 @@ def main() -> int:
     print("[2/4] Running pytest...")
     run_command([sys.executable, "-m", "pytest", "-q"])
 
-    print("[3/4] Running MVP pipeline checks...")
+    print("[3/5] Running MVP pipeline checks...")
     checks = Checks()
     for step, fn in (
         ("core pipeline", check_pipeline),
@@ -286,13 +473,17 @@ def main() -> int:
         ("payload honesty", check_payload_honesty),
         ("IQ-format auto-detection", check_auto_detection),
         ("batch export", check_batch_exports),
+        ("web dashboard", check_dashboard),
     ):
         try:
             fn(checks)
         except Exception as exc:  # explicit, never silent
             checks.check(f"{step} checks raised", False, f"{type(exc).__name__}: {exc}")
 
-    print("[4/4] Result")
+    print("[4/5] Verifying the report schema...")
+    check_report_schema(checks)
+
+    print("[5/5] Result")
     if checks.ok:
         print("MVP verification complete.")
         print("PASS")

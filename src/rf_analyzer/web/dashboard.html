@@ -1,0 +1,1353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RF Signal Analysis Workbench</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2128;
+    --panel-3: #21262d;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-dim: #1f6feb;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+
+  header.top {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 20px;
+    background: linear-gradient(180deg, #161b22, #0d1117);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    flex-wrap: wrap;
+  }
+  header.top h1 {
+    font-size: 16px;
+    margin: 0;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+  }
+  header.top h1 span { color: var(--accent); }
+  .top .spacer { flex: 1; }
+  .badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    background: var(--panel-2);
+    white-space: nowrap;
+  }
+  .badge.ok { color: var(--ok); border-color: rgba(63,185,80,.45); background: rgba(63,185,80,.10); }
+  .badge.warn { color: var(--warn); border-color: rgba(210,153,34,.45); background: rgba(210,153,34,.10); }
+  .badge.err { color: var(--err); border-color: rgba(248,81,73,.45); background: rgba(248,81,73,.10); }
+  .badge.info { color: var(--accent); border-color: rgba(88,166,255,.45); background: rgba(88,166,255,.10); }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 330px minmax(0, 1fr);
+    gap: 18px;
+    padding: 18px 20px 60px;
+    align-items: start;
+  }
+  @media (max-width: 1000px) { .layout { grid-template-columns: 1fr; } }
+
+  aside.controls { position: sticky; top: 74px; }
+  @media (max-width: 1000px) { aside.controls { position: static; } }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 16px;
+  }
+  .panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+    margin: 0 0 10px;
+    font-weight: 600;
+  }
+  .panel h3 {
+    font-size: 13px;
+    margin: 0 0 8px;
+    font-weight: 600;
+  }
+
+  label.field { display: block; margin-bottom: 10px; }
+  label.field > span {
+    display: block;
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  input[type="text"], input[type="number"], select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 7px 9px;
+    font-size: 13px;
+    font-family: var(--mono);
+  }
+  input:focus, select:focus { outline: none; border-color: var(--accent-dim); }
+  .checkrow { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .checkrow input { accent-color: var(--accent-dim); }
+  .checkrow label { font-size: 13px; color: var(--text); cursor: pointer; }
+
+  button {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel-3);
+    color: var(--text);
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: background .12s, border-color .12s;
+  }
+  button:hover:not(:disabled) { background: #2d333b; border-color: #484f58; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.primary {
+    background: var(--accent-dim);
+    border-color: var(--accent-dim);
+    color: #fff;
+    width: 100%;
+  }
+  button.primary:hover:not(:disabled) { background: #388bfd; border-color: #388bfd; }
+  button.ghost { width: 100%; }
+  .btnrow { display: flex; gap: 8px; }
+  .btnrow button { flex: 1; }
+
+  select.captures { font-size: 12px; }
+  .hint { font-size: 11px; color: var(--muted); margin: 6px 0 0; line-height: 1.4; }
+
+  .drop {
+    border: 1.5px dashed var(--border);
+    border-radius: 8px;
+    padding: 16px 10px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 12px;
+    cursor: pointer;
+    transition: border-color .12s, background .12s;
+    margin-bottom: 10px;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent-dim); background: rgba(31,111,235,.08); color: var(--text); }
+  .drop strong { color: var(--text); display: block; margin-bottom: 3px; font-size: 13px; }
+
+  /* ---- stat cards ---- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .stat {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .stat .k {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: var(--muted);
+    margin-bottom: 5px;
+  }
+  .stat .v {
+    font-family: var(--mono);
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--text);
+    word-break: break-word;
+  }
+  .stat .v.ok { color: var(--ok); }
+  .stat .v.warn { color: var(--warn); }
+  .stat .v.err { color: var(--err); }
+  .stat .sub { font-size: 11px; color: var(--muted); margin-top: 3px; font-family: var(--mono); }
+
+  /* ---- plots ---- */
+  .plotgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+  .plot {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    min-width: 0;
+  }
+  .plot .hd {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .plot .hd h3 { margin: 0; font-size: 13px; font-weight: 600; }
+  .plot .hd .meta { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  canvas { display: block; width: 100%; background: #0a0d12; border-radius: 6px; }
+  .plot.wide { grid-column: 1 / -1; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-top: 8px; font-family: var(--mono); }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+
+  /* ---- table ---- */
+  table.params { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.params td { padding: 5px 8px; border-bottom: 1px solid var(--panel-3); vertical-align: top; }
+  table.params td:first-child { color: var(--muted); width: 46%; }
+  table.params td:last-child { font-family: var(--mono); text-align: right; word-break: break-all; }
+  table.params tr:last-child td { border-bottom: none; }
+  details.more summary {
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--accent);
+    margin-top: 10px;
+    list-style: none;
+  }
+  details.more summary::-webkit-details-marker { display: none; }
+  details.more summary::before { content: "\25B8 "; }
+  details.more[open] summary::before { content: "\25BE "; }
+
+  /* ---- hexdump / payload ---- */
+  pre.dump {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.45;
+    background: #0a0d12;
+    border: 1px solid var(--panel-3);
+    border-radius: 6px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    margin: 0;
+    white-space: pre;
+    color: #c9d1d9;
+  }
+  pre.dump.text { white-space: pre-wrap; word-break: break-word; }
+  .subhead {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--muted);
+    margin: 12px 0 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .note {
+    font-size: 12px;
+    color: var(--muted);
+    background: var(--panel-2);
+    border-left: 3px solid var(--border);
+    padding: 8px 10px;
+    border-radius: 0 6px 6px 0;
+    margin: 8px 0;
+  }
+  .note.warn { border-left-color: var(--warn); color: #e3c07a; }
+  .note.err { border-left-color: var(--err); color: #f0a09b; }
+  .note.ok { border-left-color: var(--ok); color: #8ddb9c; }
+
+  ul.issues { margin: 6px 0 0; padding-left: 18px; font-size: 12px; color: var(--muted); }
+  ul.issues li { margin-bottom: 3px; }
+  ul.issues.err li { color: #f0a09b; }
+
+  .empty {
+    text-align: center;
+    color: var(--muted);
+    padding: 50px 20px;
+    font-size: 13px;
+  }
+  .spinner {
+    display: inline-block;
+    width: 13px; height: 13px;
+    border: 2px solid rgba(255,255,255,.25);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+    vertical-align: -2px;
+    margin-right: 7px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---- batch ---- */
+  table.batch { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.batch th {
+    text-align: left;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: var(--muted);
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  table.batch td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--panel-3);
+    font-family: var(--mono);
+    white-space: nowrap;
+  }
+  table.batch td.name { font-family: var(--sans); }
+  table.batch tr:hover td { background: var(--panel-2); }
+  .scrollx { overflow-x: auto; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .dot.ok { background: var(--ok); }
+  .dot.warn { background: var(--warn); }
+  .dot.err { background: var(--err); }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <h1>RF Signal Analysis <span>Workbench</span></h1>
+  <span class="badge info" id="modeBadge">idle</span>
+  <span class="badge" id="fileBadge">no capture loaded</span>
+  <div class="spacer"></div>
+  <span class="badge" id="serverBadge">checking server…</span>
+</header>
+
+<div class="layout">
+
+  <aside class="controls">
+    <div class="panel">
+      <h2>1 &middot; Choose a capture</h2>
+      <label class="field">
+        <span>Bundled capture</span>
+        <select id="sampleSelect" class="captures">
+          <option value="">— select a capture —</option>
+        </select>
+      </label>
+      <div class="drop" id="dropZone">
+        <strong>Drop an .iq or .wav here</strong>
+        or click to browse
+        <input type="file" id="fileInput" accept=".iq,.wav" hidden>
+      </div>
+      <p class="hint" id="fileHint">Nothing selected yet.</p>
+    </div>
+
+    <div class="panel">
+      <h2>2 &middot; Parameters</h2>
+      <label class="field">
+        <span>Sample rate (Hz) — required for .iq</span>
+        <input type="number" id="sampleRate" placeholder="e.g. 100000" step="any" min="0">
+      </label>
+      <label class="field">
+        <span>IQ format</span>
+        <select id="iqFormat">
+          <option value="auto" selected>auto-detect</option>
+          <option value="complex64">complex64 (cf32)</option>
+          <option value="int16">int16 (ci16)</option>
+          <option value="uint8">uint8 (cu8)</option>
+          <option value="int8">int8 (ci8)</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Modulation</span>
+        <select id="modulation">
+          <option value="auto" selected>auto-detect</option>
+          <option value="BPSK">BPSK</option>
+          <option value="QPSK">QPSK</option>
+          <option value="2-FSK">2-FSK</option>
+          <option value="16-QAM">16-QAM</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Sync word (hex, blank = probe default)</span>
+        <input type="text" id="syncWord" value="0x1ACFFC1D" spellcheck="false">
+      </label>
+      <div class="checkrow">
+        <input type="checkbox" id="decode" checked>
+        <label for="decode">Search FEC / interleaver &amp; verify with CRC-16</label>
+      </div>
+      <label class="field">
+        <span>Frame length in bits (blank = auto)</span>
+        <input type="number" id="frameBits" placeholder="auto" step="1" min="0">
+      </label>
+      <button class="primary" id="analyzeBtn" disabled>Analyze capture</button>
+      <p class="hint">Auto-detect guesses the raw IQ dtype and the modulation from the samples themselves. Pick a value explicitly if the guess looks wrong.</p>
+    </div>
+
+    <div class="panel">
+      <h2>3 &middot; Batch</h2>
+      <button class="ghost" id="batchBtn">Analyze every bundled capture</button>
+      <p class="hint">Runs the same pipeline over all captures in <code>sample_data/</code> and <code>real_data/</code> so you can compare them side by side. The CLI equivalent also exports CSV and HTML: <code>python scripts/batch_analyze.py sample_data</code></p>
+    </div>
+
+    <div class="panel">
+      <h2>4 &middot; Export</h2>
+      <div class="btnrow">
+        <button id="dlJsonBtn" disabled>Report JSON</button>
+        <button id="dlBitsBtn" disabled>Bits (.bin)</button>
+      </div>
+      <p class="hint">The decoded payload (when the CRC-16 check passes) is saved by the pipeline to <code>output/&lt;name&gt;_payload.bin</code>.</p>
+    </div>
+  </aside>
+
+  <main>
+    <div id="issues"></div>
+
+    <div id="results" hidden>
+      <div class="stats" id="statCards"></div>
+
+      <div class="panel">
+        <h2>Signal parameters</h2>
+        <table class="params" id="paramTable"></table>
+        <details class="more">
+          <summary>All report fields</summary>
+          <table class="params" id="paramTableFull" style="margin-top:8px"></table>
+        </details>
+      </div>
+
+      <div class="plotgrid" id="plotGrid">
+        <div class="plot">
+          <div class="hd"><h3>Constellation</h3><span class="meta" id="constMeta"></span></div>
+          <canvas id="cvConst" height="300"></canvas>
+          <div class="legend">
+            <span><i style="background:#58a6ff"></i>received symbols</span>
+            <span><i style="background:#3fb950"></i>ideal points</span>
+          </div>
+        </div>
+
+        <div class="plot">
+          <div class="hd"><h3>Power spectral density</h3><span class="meta" id="psdMeta"></span></div>
+          <canvas id="cvPsd" height="300"></canvas>
+          <div class="legend"><span><i style="background:#58a6ff"></i>PSD (dB)</span><span><i style="background:#d29922"></i>peak</span></div>
+        </div>
+
+        <div class="plot">
+          <div class="hd"><h3>Eye diagram</h3><span class="meta" id="eyeMeta"></span></div>
+          <canvas id="cvEye" height="300"></canvas>
+          <div class="legend"><span><i style="background:#58a6ff"></i>overlaid traces</span></div>
+        </div>
+
+        <div class="plot">
+          <div class="hd"><h3>I / Q time series</h3><span class="meta" id="timeMeta"></span></div>
+          <canvas id="cvTime" height="300"></canvas>
+          <div class="legend"><span><i style="background:#58a6ff"></i>I</span><span><i style="background:#d29922"></i>Q</span><span><i style="background:#3fb950"></i>|x|</span></div>
+        </div>
+
+        <div class="plot wide">
+          <div class="hd"><h3>Waterfall</h3><span class="meta" id="wfMeta"></span></div>
+          <canvas id="cvWf" height="260"></canvas>
+          <div class="legend">
+            <span id="wfLow">low</span>
+            <span style="flex:1;max-width:260px;height:9px;border-radius:2px;background:linear-gradient(90deg,#0d1117,#1e3c78,#008cb4,#3cc878,#f0c83c,#fa5a3c)"></span>
+            <span id="wfHigh">high</span>
+          </div>
+        </div>
+
+        <div class="plot wide">
+          <div class="hd"><h3>Demodulated bit stream</h3><span class="meta" id="ribbonMeta"></span></div>
+          <canvas id="cvRibbon" height="120"></canvas>
+          <div class="legend">
+            <span><i style="background:#6e7681"></i>before header</span>
+            <span><i style="background:#d29922"></i>sync word</span>
+            <span><i style="background:#58a6ff"></i>payload bits</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" id="payloadPanel" style="margin-top:16px">
+        <h2>Payload</h2>
+        <div id="payloadBody"></div>
+      </div>
+
+      <div class="panel" id="batchPanel" hidden style="margin-top:16px">
+        <h2>Batch comparison</h2>
+        <div class="scrollx"><table class="batch" id="batchTable"></table></div>
+        <p class="hint" id="batchHint"></p>
+      </div>
+    </div>
+
+    <div class="panel empty" id="emptyState">
+      <p>Pick a bundled capture or drop an <code>.iq</code> / <code>.wav</code> file to begin.</p>
+      <p style="font-size:12px">Everything runs locally through the same <code>analyze_file()</code> pipeline the desktop app and the CLI use — this page only draws the results.</p>
+    </div>
+  </main>
+</div>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ *
+ * State + tiny helpers
+ * ------------------------------------------------------------------ */
+const state = { captures: [], file: null, sampleName: "", payload: null, busy: false };
+
+const $ = (sel) => document.querySelector(sel);
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  return node;
+}
+
+function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+function setBadge(node, text, kind) {
+  node.textContent = text;
+  node.className = "badge" + (kind ? " " + kind : "");
+}
+
+function fmtNum(value, digits) {
+  if (value === null || value === undefined || value === "") return "--";
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  const n = Number(value);
+  if (!isFinite(n)) return String(value);
+  if (n === 0) return "0";
+  const abs = Math.abs(n);
+  if (abs >= 1e6 || abs < 1e-3) return n.toExponential(digits === undefined ? 3 : digits);
+  return n.toFixed(digits === undefined ? 3 : digits);
+}
+
+/* ------------------------------------------------------------------ *
+ * Canvas plumbing (device-pixel-ratio aware, theme-aware)
+ * ------------------------------------------------------------------ */
+const THEME = {
+  bg: "#0a0d12", grid: "#21262d", axis: "#484f58",
+  text: "#8b949e", accent: "#58a6ff", ok: "#3fb950",
+  warn: "#d29922", muted: "#6e7681",
+};
+
+function hidpi(canvas, cssHeight) {
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth || canvas.parentElement.clientWidth || 600;
+  const height = cssHeight || canvas.clientHeight || 300;
+  canvas.width = Math.max(1, Math.floor(width * dpr));
+  canvas.height = Math.max(1, Math.floor(height * dpr));
+  canvas.style.height = height + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = THEME.bg;
+  ctx.fillRect(0, 0, width, height);
+  return { ctx, w: width, h: height };
+}
+
+function plotFrame(ctx, w, h, pad, xTicks, yTicks, xFmt, yFmt, xLabel, yLabel) {
+  const x0 = pad.l, x1 = w - pad.r, y0 = h - pad.b, y1 = pad.t;
+  ctx.strokeStyle = THEME.grid;
+  ctx.lineWidth = 1;
+  ctx.font = "10px " + getComputedStyle(document.body).getPropertyValue("--mono");
+  ctx.fillStyle = THEME.text;
+
+  for (let i = 0; i <= yTicks; i++) {
+    const y = y1 + (y0 - y1) * (i / yTicks);
+    ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    ctx.fillText(yFmt(i / yTicks), x0 - 6, y);
+  }
+  for (let i = 0; i <= xTicks; i++) {
+    const x = x0 + (x1 - x0) * (i / xTicks);
+    ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    ctx.fillText(xFmt(i / xTicks), x, y0 + 5);
+  }
+  ctx.strokeStyle = THEME.axis;
+  ctx.beginPath(); ctx.moveTo(x0, y1); ctx.lineTo(x0, y0); ctx.lineTo(x1, y0); ctx.stroke();
+
+  ctx.fillStyle = THEME.text;
+  ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+  if (xLabel) ctx.fillText(xLabel, (x0 + x1) / 2, h - 1);
+  if (yLabel) {
+    ctx.save();
+    ctx.translate(11, (y0 + y1) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    ctx.fillText(yLabel, 0, 0);
+    ctx.restore();
+  }
+  return { x0, x1, y0, y1 };
+}
+
+function niceRange(values, fallback) {
+  let lo = Infinity, hi = -Infinity;
+  for (const v of values) { if (!isFinite(v)) continue; if (v < lo) lo = v; if (v > hi) hi = v; }
+  if (!isFinite(lo) || !isFinite(hi)) return fallback;
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const span = hi - lo;
+  return [lo - span * 0.06, hi + span * 0.06];
+}
+
+function noData(canvas, message) {
+  const { ctx, w, h } = hidpi(canvas, canvas.clientHeight || 300);
+  ctx.fillStyle = THEME.muted;
+  ctx.font = "12px " + getComputedStyle(document.body).getPropertyValue("--sans");
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(message || "no data", w / 2, h / 2);
+}
+
+/* ------------------------------------------------------------------ *
+ * Plots
+ * ------------------------------------------------------------------ */
+function drawConstellation(plot) {
+  const canvas = $("#cvConst");
+  if (!plot) return noData(canvas, "no constellation data");
+  const I = plot.i, Q = plot.q;
+  if (!I || !I.length) return noData(canvas, "no symbols");
+
+  const { ctx, w, h } = hidpi(canvas, 300);
+  const idealI = plot.ideal_i || [], idealQ = plot.ideal_q || [];
+  const lo = Math.min(...I, ...Q, ...idealI, ...idealQ);
+  const hi = Math.max(...I, ...Q, ...idealI, ...idealQ);
+  const lim = Math.max(Math.abs(lo), Math.abs(hi)) * 1.12 || 1;
+
+  const pad = { l: 42, r: 14, t: 12, b: 26 };
+  const { x0, x1, y0, y1 } = plotFrame(
+    ctx, w, h, pad, 4, 4,
+    (t) => fmtNum(-lim + 2 * lim * t, 2),
+    (t) => fmtNum(lim - 2 * lim * t, 2),
+    "in-phase (I)", "quadrature (Q)"
+  );
+  const sx = (v) => x0 + ((v + lim) / (2 * lim)) * (x1 - x0);
+  const sy = (v) => y0 + ((lim - v) / (2 * lim)) * (y1 - y0);
+
+  ctx.fillStyle = "rgba(88,166,255,0.55)";
+  const step = Math.max(1, Math.floor(I.length / 4000));
+  for (let k = 0; k < I.length; k += step) {
+    ctx.fillRect(sx(I[k]) - 1, sy(Q[k]) - 1, 2, 2);
+  }
+  if (idealI.length) {
+    ctx.strokeStyle = THEME.ok;
+    ctx.lineWidth = 1.4;
+    for (let k = 0; k < idealI.length; k++) {
+      ctx.beginPath();
+      ctx.arc(sx(idealI[k]), sy(idealQ[k]), 5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  $("#constMeta").textContent = plot.shown + " of " + I.length + " symbols shown";
+}
+
+function drawPsd(plot) {
+  const canvas = $("#cvPsd");
+  if (!plot || !plot.freq_hz || !plot.freq_hz.length) return noData(canvas, "no spectrum data");
+  const f = plot.freq_hz, p = plot.power_db;
+
+  const { ctx, w, h } = hidpi(canvas, 300);
+  const pad = { l: 46, r: 14, t: 12, b: 26 };
+  const fLo = f[0], fHi = f[f.length - 1];
+  const [pLo, pHi] = niceRange(p, [-120, 0]);
+
+  const { x0, x1, y0, y1 } = plotFrame(
+    ctx, w, h, pad, 4, 4,
+    (t) => fmtNum(fLo + (fHi - fLo) * t, 0),
+    (t) => fmtNum(pHi - (pHi - pLo) * t, 0),
+    "frequency (Hz)", "power (dB)"
+  );
+  const sx = (v) => x0 + ((v - fLo) / (fHi - fLo || 1)) * (x1 - x0);
+  const sy = (v) => y0 + ((pHi - v) / (pHi - pLo || 1)) * (y1 - y0);
+
+  ctx.strokeStyle = THEME.accent;
+  ctx.lineWidth = 1.3;
+  ctx.beginPath();
+  for (let k = 0; k < f.length; k++) {
+    const x = sx(f[k]), y = sy(p[k]);
+    if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  if (isFinite(plot.peak_hz)) {
+    ctx.strokeStyle = THEME.warn;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(sx(plot.peak_hz), y1);
+    ctx.lineTo(sx(plot.peak_hz), y0);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  $("#psdMeta").textContent = "peak " + fmtNum(plot.peak_hz, 0) + " Hz";
+}
+
+function drawEye(plot) {
+  const canvas = $("#cvEye");
+  if (!plot || !plot.available || !plot.traces || !plot.traces.length) {
+    return noData(canvas, (plot && plot.reason) || "no eye data");
+  }
+  const { ctx, w, h } = hidpi(canvas, 300);
+  const pad = { l: 42, r: 14, t: 12, b: 26 };
+  const all = plot.traces.flat();
+  const [lo, hi] = niceRange(all, [-1, 1]);
+
+  const { x0, x1, y0, y1 } = plotFrame(
+    ctx, w, h, pad, 4, 4,
+    (t) => fmtNum(t * 2 * plot.samples_per_symbol, 0) + " sym",
+    (t) => fmtNum(hi - (hi - lo) * t, 2),
+    "time (symbols)", "amplitude"
+  );
+  const n = plot.span;
+  const sx = (k) => x0 + (k / (n - 1 || 1)) * (x1 - x0);
+  const sy = (v) => y0 + ((hi - v) / (hi - lo || 1)) * (y1 - y0);
+
+  ctx.strokeStyle = "rgba(88,166,255,0.28)";
+  ctx.lineWidth = 1;
+  for (const tr of plot.traces) {
+    ctx.beginPath();
+    for (let k = 0; k < tr.length; k++) {
+      const x = sx(k), y = sy(tr[k]);
+      if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  $("#eyeMeta").textContent = plot.traces.length + " traces, " + plot.samples_per_symbol + " sps"
+    + (plot.samples_per_symbol === 1 ? " — no oversampling, so this shows symbol transitions, not a true eye opening" : "");
+}
+
+function drawTime(plot) {
+  const canvas = $("#cvTime");
+  if (!plot || !plot.available || !plot.t_ms || !plot.t_ms.length) {
+    return noData(canvas, (plot && plot.reason) || "no time-series data");
+  }
+  const { ctx, w, h } = hidpi(canvas, 300);
+  const pad = { l: 42, r: 14, t: 12, b: 26 };
+  const t = plot.t_ms;
+  const [lo, hi] = niceRange([...plot.i, ...plot.q, ...plot.magnitude], [-1, 1]);
+  const tLo = t[0], tHi = t[t.length - 1];
+
+  const { x0, x1, y0, y1 } = plotFrame(
+    ctx, w, h, pad, 4, 4,
+    (f) => fmtNum(tLo + (tHi - tLo) * f, 2),
+    (f) => fmtNum(hi - (hi - lo) * f, 2),
+    "time (ms)", "amplitude"
+  );
+  const sx = (v) => x0 + ((v - tLo) / (tHi - tLo || 1)) * (x1 - x0);
+  const sy = (v) => y0 + ((hi - v) / (hi - lo || 1)) * (y1 - y0);
+
+  const series = [
+    { data: plot.i, color: THEME.accent },
+    { data: plot.q, color: THEME.warn },
+    { data: plot.magnitude, color: THEME.ok },
+  ];
+  for (const s of series) {
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    for (let k = 0; k < t.length; k++) {
+      const x = sx(t[k]), y = sy(s.data[k]);
+      if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  $("#timeMeta").textContent = t.length + " points";
+}
+
+function waterfallLut() {
+  const stops = [
+    [0.00, [13, 17, 23]],
+    [0.20, [30, 60, 120]],
+    [0.40, [0, 140, 180]],
+    [0.60, [60, 200, 120]],
+    [0.80, [240, 200, 60]],
+    [1.00, [250, 90, 60]],
+  ];
+  const lut = new Uint8Array(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    let a = stops[0], b = stops[stops.length - 1];
+    for (let s = 0; s < stops.length - 1; s++) {
+      if (t >= stops[s][0] && t <= stops[s + 1][0]) { a = stops[s]; b = stops[s + 1]; break; }
+    }
+    const span = b[0] - a[0] || 1;
+    const f = (t - a[0]) / span;
+    for (let c = 0; c < 3; c++) {
+      lut[i * 3 + c] = Math.round(a[1][c] + (b[1][c] - a[1][c]) * f);
+    }
+  }
+  return lut;
+}
+const WF_LUT = waterfallLut();
+
+function drawWaterfall(plot) {
+  const canvas = $("#cvWf");
+  if (!plot || !plot.available || !plot.data_b64) {
+    return noData(canvas, (plot && plot.reason) || "no waterfall data");
+  }
+  const { ctx, w, h } = hidpi(canvas, 260);
+  const bin = atob(plot.data_b64);
+  const rows = plot.rows, cols = plot.cols;
+  if (bin.length < rows * cols) return noData(canvas, "waterfall data truncated");
+
+  const off = document.createElement("canvas");
+  off.width = cols; off.height = rows;
+  const octx = off.getContext("2d");
+  const img = octx.createImageData(cols, rows);
+  for (let i = 0; i < rows * cols; i++) {
+    const v = bin.charCodeAt(i);
+    img.data[i * 4 + 0] = WF_LUT[v * 3 + 0];
+    img.data[i * 4 + 1] = WF_LUT[v * 3 + 1];
+    img.data[i * 4 + 2] = WF_LUT[v * 3 + 2];
+    img.data[i * 4 + 3] = 255;
+  }
+  octx.putImageData(img, 0, 0);
+
+  const pad = { l: 46, r: 14, t: 10, b: 24 };
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, pad.l, pad.t, w - pad.l - pad.r, h - pad.t - pad.b);
+
+  ctx.strokeStyle = THEME.axis;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(pad.l, pad.t, w - pad.l - pad.r, h - pad.t - pad.b);
+
+  const f = plot.freq_hz || [];
+  const t = plot.time_s || [];
+  ctx.fillStyle = THEME.text;
+  ctx.font = "10px " + getComputedStyle(document.body).getPropertyValue("--mono");
+  ctx.textBaseline = "top"; ctx.textAlign = "center";
+  for (let i = 0; i <= 4; i++) {
+    const idx = Math.min(f.length - 1, Math.round((f.length - 1) * (i / 4)));
+    const x = pad.l + ((w - pad.l - pad.r) * i) / 4;
+    ctx.fillText(fmtNum(f[idx], 0), x, h - pad.b + 5);
+  }
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  for (let i = 0; i <= 4; i++) {
+    const idx = Math.min(t.length - 1, Math.round((t.length - 1) * (i / 4)));
+    const y = pad.t + ((h - pad.t - pad.b) * i) / 4;
+    ctx.fillText(fmtNum(t[idx], 4), pad.l - 6, y);
+  }
+  $("#wfMeta").textContent = rows + " x " + cols + " bins, " + fmtNum(plot.min_db, 1) + " to " + fmtNum(plot.max_db, 1) + " dB";
+  $("#wfLow").textContent = fmtNum(plot.min_db, 1) + " dB";
+  $("#wfHigh").textContent = fmtNum(plot.max_db, 1) + " dB";
+}
+
+function drawRibbon(report) {
+  const canvas = $("#cvRibbon");
+  const bits = (report.demodulation || {}).bits_preview || [];
+  if (!bits.length) return noData(canvas, "no demodulated bits");
+  const cor = report.correlation || {};
+  const start = Number(cor.header_offset) >= 0 ? Number(cor.header_offset) : -1;
+  const syncLen = Number(cor.sync_length) || 0;
+
+  const { ctx, w, h } = hidpi(canvas, 120);
+  const pad = { l: 14, r: 14, t: 12, b: 22 };
+  const x0 = pad.l, x1 = w - pad.r, y0 = h - pad.b, y1 = pad.t;
+  const bw = (x1 - x0) / bits.length;
+
+  for (let i = 0; i < bits.length; i++) {
+    let color = THEME.muted;
+    if (start >= 0 && i >= start && i < start + syncLen) color = THEME.warn;
+    else if (start >= 0 && i >= start + syncLen) color = THEME.accent;
+    else if (start < 0) color = THEME.accent;
+    ctx.fillStyle = bits[i] ? color : "rgba(48,54,61,0.85)";
+    const bh = bits[i] ? (y0 - y1) : (y0 - y1) * 0.25;
+    ctx.fillRect(x0 + i * bw, y0 - bh, Math.max(0.6, bw - 0.3), bh);
+  }
+  ctx.fillStyle = THEME.text;
+  ctx.font = "10px " + getComputedStyle(document.body).getPropertyValue("--mono");
+  ctx.textAlign = "left"; ctx.textBaseline = "top";
+  ctx.fillText("bit 0", x0, y0 + 5);
+  ctx.textAlign = "right";
+  ctx.fillText("bit " + (bits.length - 1), x1, y0 + 5);
+
+  $("#ribbonMeta").textContent = bits.length + " bits shown"
+    + (start >= 0 ? ", header at " + start + ", sync " + syncLen + " bits" : ", no header found");
+}
+
+/* ------------------------------------------------------------------ *
+ * Summary + payload rendering
+ * ------------------------------------------------------------------ */
+function pick(summary, label) {
+  const row = summary.find((r) => r.label === label);
+  return row ? row.value : "--";
+}
+
+function renderStats(report, summary) {
+  const host = $("#statCards");
+  clear(host);
+  const qual = report.quality || {};
+  const dec = (report.payload || {}).decoded || {};
+  const fec = report.fec || {};
+  const cor = report.correlation || {};
+
+  const decodedOk = !!dec.available;
+  const cards = [
+    {
+      k: "Modulation", v: pick(summary, "Modulation"),
+      sub: "confidence " + pick(summary, "Modulation confidence"),
+    },
+    {
+      k: "SNR", v: pick(summary, "SNR"),
+      sub: "bandwidth " + pick(summary, "Bandwidth (est.)"),
+    },
+    {
+      k: "EVM / MER",
+      v: qual.applicable ? (qual.evm_percent < 0.01 ? "<0.01 %" : fmtNum(qual.evm_percent, 2) + " %") : "n/a",
+      sub: !qual.applicable
+        ? "no constellation"
+        : (qual.mer_db === null || qual.mer_db === undefined
+            ? "MER unbounded (no error vector)"
+            : (qual.mer_db > 100 ? ">100 dB MER" : fmtNum(qual.mer_db, 2) + " dB MER")),
+      cls: !qual.applicable ? "" : (qual.evm_percent < 25 ? "ok" : qual.evm_percent < 60 ? "warn" : "err"),
+    },
+    {
+      k: "Sync correlation",
+      v: fmtNum(cor.score, 4),
+      sub: cor.detected ? "header at bit " + cor.header_offset : "not detected",
+      cls: cor.detected ? "ok" : "warn",
+    },
+    {
+      k: "FEC",
+      v: fec.validated ? "verified" : "guess only",
+      sub: fec.candidate || "--",
+      cls: fec.validated ? "ok" : "warn",
+    },
+    {
+      k: "Payload",
+      v: decodedOk ? "decoded" : "coded",
+      sub: decodedOk ? dec.bytes + " bytes, CRC-16 OK" : "no CRC-valid decode",
+      cls: decodedOk ? "ok" : "warn",
+    },
+  ];
+  for (const c of cards) {
+    const node = el("div", "stat");
+    node.appendChild(el("div", "k", c.k));
+    node.appendChild(el("div", "v" + (c.cls ? " " + c.cls : ""), c.v));
+    node.appendChild(el("div", "sub", c.sub));
+    host.appendChild(node);
+  }
+}
+
+function renderParams(summary) {
+  const host = $("#paramTable");
+  const full = $("#paramTableFull");
+  clear(host); clear(full);
+  const headline = [
+    "File", "Sample rate", "IQ format used", "Samples", "Duration",
+    "Modulation", "Demod mode", "Demodulated bits",
+    "Center freq (est.)", "Bandwidth (est.)", "SNR", "Symbol rate (est.)",
+    "Sample rate (est.)", "CFO", "EVM / MER", "MER", "Modulation order",
+    "Sync word", "Header offset", "Correlation score", "Sync detected",
+    "FEC (blind guess)", "FEC verified", "Interleaver (blind guess)",
+    "Interleaver verified", "Payload bits", "Payload bytes (raw)",
+    "Decoded", "Decoded scheme", "Decoded bytes", "CRC-16 passed",
+  ];
+  const fill = (table, rows) => {
+    for (const r of rows) {
+      const tr = el("tr");
+      tr.appendChild(el("td", null, r.label));
+      tr.appendChild(el("td", null, r.value));
+      table.appendChild(tr);
+    }
+  };
+  fill(host, summary.filter((r) => headline.includes(r.label)));
+  fill(full, summary);
+}
+
+function renderHexdump(parent, lines, extraClass) {
+  const pre = el("pre", "dump" + (extraClass ? " " + extraClass : ""));
+  pre.textContent = lines && lines.length ? lines.join("\n") : "(empty)";
+  parent.appendChild(pre);
+}
+
+function renderPayload(report) {
+  const host = $("#payloadBody");
+  clear(host);
+  const pay = report.payload || {};
+  if (!pay || !Object.keys(pay).length) {
+    host.appendChild(el("div", "note warn", "No payload block in this report."));
+    return;
+  }
+  const raw = pay.raw || {};
+  const dec = pay.decoded || {};
+  const search = pay.decode_search || {};
+
+  const banner = el("div", "note " + (dec.available ? "ok" : "warn"));
+  banner.textContent = dec.available
+    ? "CRC-16 verified: the payload below is a real decoded message (scheme: " + dec.scheme
+      + ", interleaver: " + (dec.interleaver || "none") + ")."
+    : "Not decoded. " + (dec.note || "The bytes below are still coded — they are not a message.");
+  host.appendChild(banner);
+
+  const meta = el("table", "params");
+  const rows = [
+    ["Payload starts at bit", fmtNum(pay.payload_bit_offset)],
+    ["Payload bits", fmtNum(pay.payload_bits)],
+    ["Raw bytes", fmtNum(raw.bytes)],
+    ["Raw content type", String(raw.content_type || "--")],
+    ["Decode search enabled", search.enabled ? "yes" : "no"],
+    ["Hypotheses tried", fmtNum(search.attempts)],
+    ["Search budget exhausted", search.budget_exhausted ? "yes" : "no"],
+    ["Decoded", dec.available ? "yes" : "no"],
+    ["Decoded scheme", String(dec.scheme || "--")],
+    ["Decoded interleaver", String(dec.interleaver || "--")],
+    ["Decoded bytes", fmtNum(dec.bytes)],
+    ["CRC-16 passed", dec.crc_pass === null || dec.crc_pass === undefined ? "--" : (dec.crc_pass ? "yes" : "no")],
+    ["Decoded confidence", fmtNum(dec.confidence)],
+    ["Errors corrected", fmtNum(dec.errors_corrected)],
+  ];
+  for (const [k, v] of rows) {
+    const tr = el("tr");
+    tr.appendChild(el("td", null, k));
+    tr.appendChild(el("td", null, v));
+    meta.appendChild(tr);
+  }
+  host.appendChild(meta);
+
+  if (dec.available) {
+    host.appendChild(el("div", "subhead", "Decoded message (CRC-16 verified)"));
+    if (dec.text) {
+      renderHexdump(host, [dec.text], "text");
+    }
+    renderHexdump(host, dec.hexdump);
+  }
+
+  host.appendChild(el("div", "subhead", dec.available ? "Raw payload (still coded)" : "Raw payload (coded bits as bytes)"));
+  if (raw.text_preview) {
+    renderHexdump(host, [raw.text_preview], "text");
+  }
+  renderHexdump(host, raw.hexdump);
+}
+
+function renderIssues(report) {
+  const host = $("#issues");
+  clear(host);
+  const errors = report.errors || [];
+  const warnings = report.warnings || [];
+  if (!errors.length && !warnings.length) return;
+
+  const box = el("div", "panel");
+  if (errors.length) {
+    box.appendChild(el("h2", null, "Errors"));
+    const ul = el("ul", "issues err");
+    for (const e of errors) ul.appendChild(el("li", null, e));
+    box.appendChild(ul);
+  }
+  if (warnings.length) {
+    box.appendChild(el("h2", null, "Warnings"));
+    const ul = el("ul", "issues");
+    for (const w of warnings) ul.appendChild(el("li", null, w));
+    box.appendChild(ul);
+  }
+  host.appendChild(box);
+}
+
+/* ------------------------------------------------------------------ *
+ * Data flow
+ * ------------------------------------------------------------------ */
+function readParams() {
+  return {
+    sample_rate: $("#sampleRate").value.trim(),
+    iq_format: $("#iqFormat").value,
+    modulation: $("#modulation").value,
+    sync_word: $("#syncWord").value.trim(),
+    decode: $("#decode").checked ? "1" : "0",
+    frame_bits: $("#frameBits").value.trim(),
+  };
+}
+
+function toQuery(extra) {
+  const p = readParams();
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(Object.assign(p, extra || {}))) {
+    if (v !== "" && v !== null && v !== undefined) params.set(k, v);
+  }
+  return params;
+}
+
+function setBusy(busy, label) {
+  state.busy = busy;
+  $("#analyzeBtn").disabled = busy || !(state.file || state.sampleName);
+  $("#batchBtn").disabled = busy;
+  setBadge($("#modeBadge"), busy ? (label || "analyzing…") : "idle", busy ? "info" : "");
+}
+
+function render(payload) {
+  state.payload = payload;
+  const report = payload.report || {};
+  const plots = payload.plots;
+
+  $("#emptyState").hidden = true;
+  $("#results").hidden = false;
+  renderIssues(report);
+  renderStats(report, payload.summary || []);
+  renderParams(payload.summary || []);
+  renderPayload(report);
+
+  if (plots) {
+    drawConstellation(plots.constellation);
+    drawPsd(plots.psd);
+    drawEye(plots.eye);
+    drawTime(plots.time);
+    drawWaterfall(plots.waterfall);
+  } else {
+    for (const id of ["#cvConst", "#cvPsd", "#cvEye", "#cvTime", "#cvWf"]) {
+      noData($(id), payload.plot_error || "plots unavailable");
+    }
+  }
+  drawRibbon(report);
+
+  const name = (report.input || {}).file_name || "";
+  setBadge($("#fileBadge"), name || "unknown capture", "");
+  const errs = (report.errors || []).length;
+  setBadge($("#modeBadge"), errs ? "error" : "analyzed", errs ? "err" : "ok");
+
+  $("#dlJsonBtn").disabled = false;
+  $("#dlBitsBtn").disabled = !((report.demodulation || {}).bits_preview || []).length;
+}
+
+async function analyzeSelected() {
+  if (state.busy) return;
+  if (!state.file && !state.sampleName) return;
+  setBusy(true, "analyzing…");
+  try {
+    let res;
+    if (state.file) {
+      const q = toQuery({ name: state.file.name });
+      res = await fetch("/api/analyze?" + q.toString(), {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: state.file,
+      });
+    } else {
+      const q = toQuery({ name: state.sampleName });
+      res = await fetch("/api/analyze?" + q.toString());
+    }
+    const payload = await res.json();
+    if (!res.ok || payload.ok === false) {
+      setBadge($("#modeBadge"), "request failed", "err");
+      const report = { errors: [payload.error || ("HTTP " + res.status)], warnings: [] };
+      $("#emptyState").hidden = true;
+      $("#results").hidden = false;
+      renderIssues(report);
+      return;
+    }
+    render(payload);
+  } catch (err) {
+    setBadge($("#modeBadge"), "network error", "err");
+    $("#emptyState").hidden = true;
+    $("#results").hidden = false;
+    renderIssues({ errors: [String(err)], warnings: [] });
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function runBatch() {
+  if (state.busy) return;
+  const names = state.captures.map((c) => c.name);
+  if (!names.length) return;
+  setBusy(true, "batch…");
+  const rows = [];
+  const table = $("#batchTable");
+  clear(table);
+  const thead = el("tr");
+  for (const h of ["capture", "samples", "modulation", "SNR dB", "EVM %", "sync", "FEC", "decoded", "bytes"]) {
+    thead.appendChild(el("th", null, h));
+  }
+  table.appendChild(thead);
+
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    setBadge($("#modeBadge"), "batch " + (i + 1) + "/" + names.length, "info");
+    let report = {};
+    try {
+      const q = toQuery({ name });
+      const res = await fetch("/api/analyze?" + q.toString());
+      const payload = await res.json();
+      report = payload.report || {};
+    } catch (err) {
+      report = { errors: [String(err)] };
+    }
+    const sig = report.signal || {};
+    const mod = report.modulation || {};
+    const qual = report.quality || {};
+    const cor = report.correlation || {};
+    const dec = (report.payload || {}).decoded || {};
+    const fec = report.fec || {};
+    const failed = (report.errors || []).length > 0;
+
+    const tr = el("tr");
+    const nameCell = el("td", "name");
+    nameCell.appendChild(el("span", "dot " + (failed ? "err" : dec.available ? "ok" : "warn")));
+    nameCell.appendChild(document.createTextNode(name));
+    tr.appendChild(nameCell);
+    tr.appendChild(el("td", null, fmtNum(sig.num_samples, 0)));
+    tr.appendChild(el("td", null, mod.estimated_type || "--"));
+    tr.appendChild(el("td", null, fmtNum(sig.snr_db, 2)));
+    tr.appendChild(el("td", null, qual.applicable ? fmtNum(qual.evm_percent, 2) : "n/a"));
+    tr.appendChild(el("td", null, fmtNum(cor.score, 3)));
+    tr.appendChild(el("td", null, fec.validated ? "verified" : (fec.candidate || "--")));
+    tr.appendChild(el("td", null, dec.available ? "yes" : "no"));
+    tr.appendChild(el("td", null, dec.available ? fmtNum(dec.bytes, 0) : "--"));
+    table.appendChild(tr);
+    rows.push({ name, report });
+  }
+  const verified = rows.filter((r) => ((r.report.payload || {}).decoded || {}).available).length;
+  $("#batchHint").textContent = rows.length + " capture(s) analysed, " + verified
+    + " with a CRC-16 verified payload. Export the same comparison from the CLI with scripts/batch_analyze.py.";
+  $("#batchPanel").hidden = false;
+  setBadge($("#modeBadge"), "batch done", "ok");
+  setBusy(false);
+}
+
+/* ------------------------------------------------------------------ *
+ * Boot
+ * ------------------------------------------------------------------ */
+function download(name, text, mime) {
+  const blob = new Blob([text], { type: mime || "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = el("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function wireEvents() {
+  $("#analyzeBtn").addEventListener("click", analyzeSelected);
+  $("#batchBtn").addEventListener("click", runBatch);
+
+  $("#sampleSelect").addEventListener("change", (ev) => {
+    state.sampleName = ev.target.value;
+    state.file = null;
+    const cap = state.captures.find((c) => c.name === state.sampleName);
+    $("#fileHint").textContent = cap
+      ? cap.name + " — " + (cap.size_bytes / 1024).toFixed(1) + " KB, from " + cap.folder + "/"
+      : "Nothing selected yet.";
+    $("#analyzeBtn").disabled = !state.sampleName;
+  });
+
+  const drop = $("#dropZone");
+  const input = $("#fileInput");
+  drop.addEventListener("click", () => input.click());
+  input.addEventListener("change", () => {
+    if (input.files && input.files[0]) acceptFile(input.files[0]);
+  });
+  ["dragenter", "dragover"].forEach((e) =>
+    drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((e) =>
+    drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", (ev) => {
+    const f = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+    if (f) acceptFile(f);
+  });
+
+  $("#dlJsonBtn").addEventListener("click", () => {
+    if (!state.payload) return;
+    download("dashboard_report.json", JSON.stringify(state.payload.report, null, 2));
+  });
+  $("#dlBitsBtn").addEventListener("click", () => {
+    if (!state.payload) return;
+    const bits = (state.payload.report.demodulation || {}).bits_preview || [];
+    download("bits.txt", bits.join(""), "text/plain");
+  });
+
+  window.addEventListener("resize", () => {
+    if (state.payload && state.payload.plots) {
+      drawConstellation(state.payload.plots.constellation);
+      drawPsd(state.payload.plots.psd);
+      drawEye(state.payload.plots.eye);
+      drawTime(state.payload.plots.time);
+      drawWaterfall(state.payload.plots.waterfall);
+      drawRibbon(state.payload.report);
+    }
+  });
+}
+
+function acceptFile(file) {
+  const lower = file.name.toLowerCase();
+  if (!lower.endsWith(".iq") && !lower.endsWith(".wav")) {
+    $("#fileHint").textContent = "Unsupported file '" + file.name + "'. Use .iq or .wav.";
+    return;
+  }
+  state.file = file;
+  state.sampleName = "";
+  $("#sampleSelect").value = "";
+  $("#fileHint").textContent = file.name + " — " + (file.size / 1024).toFixed(1) + " KB (uploaded)";
+  $("#analyzeBtn").disabled = false;
+  setBadge($("#fileBadge"), file.name, "info");
+}
+
+function applyQueryParams() {
+  const q = new URLSearchParams(window.location.search);
+  if (!q.toString()) return false;
+  const map = {
+    sample_rate: "#sampleRate",
+    iq_format: "#iqFormat",
+    modulation: "#modulation",
+    sync_word: "#syncWord",
+    frame_bits: "#frameBits",
+  };
+  for (const [key, sel] of Object.entries(map)) {
+    if (q.has(key)) {
+      const node = $(sel);
+      if (node.tagName === "SELECT") {
+        const wanted = q.get(key);
+        const match = Array.from(node.options).find((o) => o.value.toLowerCase() === wanted.toLowerCase());
+        if (match) node.value = match.value;
+      } else {
+        node.value = q.get(key);
+      }
+    }
+  }
+  if (q.has("decode")) $("#decode").checked = q.get("decode") !== "0";
+  return q.get("auto") === "1" || q.get("auto") === "true";
+}
+
+async function boot() {
+  wireEvents();
+  const autoRun = applyQueryParams();
+  try {
+    const res = await fetch("/api/samples");
+    const data = await res.json();
+    state.captures = data.captures || [];
+    const sel = $("#sampleSelect");
+    for (const cap of state.captures) {
+      const opt = el("option", null, cap.name + "  (" + cap.folder + ", " + (cap.size_bytes / 1024).toFixed(1) + " KB)");
+      opt.value = cap.name;
+      sel.appendChild(opt);
+    }
+    setBadge($("#serverBadge"), "server ok · " + state.captures.length + " captures", "ok");
+    if (!state.captures.length) {
+      $("#fileHint").textContent = "No bundled captures found — drop an .iq or .wav file, or run python scripts/generate_test_data.py first.";
+    }
+
+    // Deep link: ?name=<capture>&auto=1 reproduces a full analysis.
+    const wanted = new URLSearchParams(window.location.search).get("name");
+    if (wanted && state.captures.some((c) => c.name === wanted)) {
+      state.sampleName = wanted;
+      sel.value = wanted;
+      const cap = state.captures.find((c) => c.name === wanted);
+      $("#fileHint").textContent = cap.name + " — " + (cap.size_bytes / 1024).toFixed(1) + " KB, from " + cap.folder + "/";
+      $("#analyzeBtn").disabled = false;
+      if (autoRun) await analyzeSelected();
+    }
+  } catch (err) {
+    setBadge($("#serverBadge"), "server unreachable", "err");
+  }
+}
+
+boot();
+</script>
+</body>
+</html>

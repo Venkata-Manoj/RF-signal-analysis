@@ -203,3 +203,52 @@ def test_modulation_param_changes_result():
     assert bpsk_n > 0 and qpsk_n > 0
     ratio = qpsk_n / float(bpsk_n)
     assert 1.9 <= ratio <= 2.1, f"QPSK/BPSK num_bits ratio {ratio:.3f} not ~2x"
+
+
+def test_unmeasurable_bandwidth_is_warned_about_not_silently_zero():
+    """A 0 Hz bandwidth must be explained, never presented as a measurement.
+
+    For a flat-spectrum capture the naive median-floor estimator finds no
+    usable span, which also zeroes the derived sampling-rate estimate. A user
+    reading "0 Hz" would otherwise conclude the signal really is 0 Hz wide.
+    """
+    capture = SAMPLE_DATA / "qpsk.iq"
+    if not capture.exists():
+        pytest.skip("sample data not generated")
+
+    report = analyze_file(
+        {
+            "file_path": str(capture),
+            "sample_rate": 100000,
+            "iq_format": "complex64",
+            "modulation": "auto",
+        }
+    )
+    assert report["errors"] == []
+    if report["signal"]["bandwidth_estimate"] > 0.0:
+        pytest.skip("this capture happens to yield a measurable bandwidth")
+
+    assert any(
+        "Occupied-bandwidth estimate unavailable" in w for w in report["warnings"]
+    ), report["warnings"]
+
+
+def test_measurable_bandwidth_is_not_warned_about():
+    """The warning must be specific to the failure, not emitted unconditionally."""
+    capture = SAMPLE_DATA / "bpsk.iq"
+    if not capture.exists():
+        pytest.skip("sample data not generated")
+
+    report = analyze_file(
+        {
+            "file_path": str(capture),
+            "sample_rate": 100000,
+            "iq_format": "complex64",
+            "modulation": "auto",
+            "sync_word": "0x1ACFFC1D",
+        }
+    )
+    assert report["signal"]["bandwidth_estimate"] > 0.0
+    assert not any(
+        "Occupied-bandwidth estimate unavailable" in w for w in report["warnings"]
+    ), report["warnings"]

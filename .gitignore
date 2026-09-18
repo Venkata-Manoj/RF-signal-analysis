@@ -12,3 +12,10 @@ sample_data/*.npy
 # scripts/generate_test_data.py alongside the captures it describes).
 sample_data/coded_manifest.json
 *.egg-info/
+
+# Scratch screenshots from headless-browser verification.
+.verify/
+
+# Real-world captures downloaded for testing: large binaries, not source.
+real_data/*
+!real_data/.gitkeep

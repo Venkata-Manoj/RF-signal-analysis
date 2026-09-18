@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -21,13 +23,43 @@ REQUIRED_TOP_KEYS = [
 ]
 
 
+def json_safe(value: Any) -> Any:
+    """Recursively make ``value`` strict-JSON safe.
+
+    ``json.dump`` writes ``Infinity``/``NaN`` by default, but those tokens are
+    *not* valid JSON: ``JSON.parse`` in a browser rejects them outright, so a
+    report containing one is unreadable to every JavaScript consumer (the web
+    dashboard, any downstream tooling). Reports are also consumed outside
+    Python, so non-finite floats become ``None`` here and numpy scalars become
+    plain Python values.
+
+    Used by :func:`save_report` and by the dashboard's HTTP responses; both
+    also pass ``allow_nan=False`` so a leak fails loudly instead of silently
+    producing a file or response nobody can parse.
+    """
+    if isinstance(value, dict):
+        return {key: json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    if isinstance(value, bool):  # before the numeric checks: bool is an int
+        return value
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, (float, np.floating)):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    if isinstance(value, np.integer):
+        return int(value)
+    return value
+
+
 def save_report(report: dict, path: str) -> None:
-    """Save report dict as pretty-printed JSON (indent 2)."""
+    """Save report dict as pretty-printed, strict-JSON JSON (indent 2)."""
     out = Path(path)
     if out.parent != Path("") and str(out.parent) != ".":
         out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2)
+        json.dump(json_safe(report), f, indent=2, allow_nan=False)
 
 
 def save_bits(bits, path: str) -> None:

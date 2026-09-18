@@ -332,3 +332,23 @@ def test_detect_iq_format_handles_tiny_file(tmp_path):
     path.write_bytes(b"\x01\x02\x03")
     result = detect_iq_format(str(path))
     assert result["format"] in IQ_FORMATS
+
+
+def test_evm_of_a_noiseless_capture_reports_unbounded_mer_as_none():
+    """A zero error vector must not produce `inf`.
+
+    `Infinity` is not valid JSON and `JSON.parse` rejects it, so the absence
+    of a measurable error is reported as `None` instead.
+    """
+    import math
+
+    rng = np.random.default_rng(9)
+    bits = rng.integers(0, 2, size=512, dtype=np.uint8)
+    ideal = np.asarray(bits_to_bpsk(bits), dtype=np.complex128)
+
+    result = compute_evm(ideal, "BPSK")
+    assert result["applicable"] is True
+    assert result["evm_percent"] == pytest.approx(0.0, abs=1e-12)
+    assert result["mer_db"] is None
+    assert result["snr_db_from_evm"] is None
+    assert not math.isinf(result["evm_percent"])

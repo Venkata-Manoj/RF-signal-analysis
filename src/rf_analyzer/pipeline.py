@@ -26,6 +26,7 @@ from rf_analyzer.config import (
     CORRELATION_THRESHOLD,
     DECODE_MAX_BITS,
     DECODE_TIME_BUDGET_S,
+    DEFAULT_SYNC_WORD,
     PAYLOAD_PREVIEW_BYTES,
     TOOL_NAME,
     VERSION,
@@ -38,6 +39,7 @@ from rf_analyzer.core.deinterleave import (
 )
 from rf_analyzer.core.demod import demod_2fsk, demod_bpsk, demod_qam16, demod_qpsk
 from rf_analyzer.core.dsp import (
+    compute_evm,
     compute_psd,
     estimate_bandwidth,
     estimate_center_frequency,
@@ -92,6 +94,7 @@ def _error_report(file_name: str, warnings: list, message: str) -> dict:
         "fec": {},
         "interleaving": {},
         "display": {},
+        "quality": {},
         "warnings": list(warnings),
         "errors": [message],
     }
@@ -210,6 +213,17 @@ def analyze_file(request: dict) -> dict:
         bandwidth = float(estimate_bandwidth(freqs, psd_db))
         snr = float(estimate_snr(psd_db))
         sample_rate_estimate = float(estimate_sampling_rate(bandwidth))
+        if bandwidth <= 0.0:
+            # estimate_bandwidth returns 0.0 when no usable span exists. Left
+            # unexplained, that reads as a measurement of "0 Hz" and silently
+            # zeroes the derived sampling-rate estimate too, so say what
+            # actually happened.
+            warnings.append(
+                "Occupied-bandwidth estimate unavailable: no frequency bin "
+                "cleared the noise floor by 10 dB. The bandwidth and the "
+                "sampling-rate estimate derived from it are reported as 0 Hz "
+                "meaning 'not measurable', not as measurements."
+            )
         try:
             symbol_rate_estimate = float(estimate_symbol_rate(samples, sample_rate))
         except Exception:
@@ -258,6 +272,28 @@ def analyze_file(request: dict) -> dict:
             bits = demod_bpsk(samples)
 
         sync_word = request.get("sync_word")
+        assumed_sync_word: str | None = None
+        if not sync_word:
+            # No sync word was supplied. Rather than silently starting the
+            # payload at bit 0 -- which mis-frames every capture that *does*
+            # carry a header, and makes the decode search miss -- probe with
+            # the project default and, only if it correlates above threshold,
+            # use it as a framing hint. The probe is recorded as an
+            # assumption in the report; it is never presented as a value the
+            # caller supplied. A 32-bit match at >=0.85 does not occur by
+            # chance, so random noise still yields no header.
+            probe = find_header(np.asarray(bits), hex_to_bits(DEFAULT_SYNC_WORD))
+            if bool(probe.get("detected", False)) and int(probe.get("offset", -1)) >= 0:
+                sync_word = DEFAULT_SYNC_WORD
+                assumed_sync_word = DEFAULT_SYNC_WORD
+                warnings.append(
+                    "No sync_word was supplied; assumed the default "
+                    f"{DEFAULT_SYNC_WORD} (correlation "
+                    f"{float(probe.get('score', 0.0)):.2f} at bit "
+                    f"{int(probe.get('offset', 0))}). Pass sync_word explicitly "
+                    "if the capture uses a different header."
+                )
+
         if sync_word:
             sync_bits = hex_to_bits(str(sync_word))
             found = find_header(np.asarray(bits), sync_bits)
@@ -266,6 +302,7 @@ def analyze_file(request: dict) -> dict:
             detected = bool(found.get("detected", score >= CORRELATION_THRESHOLD))
             correlation = {
                 "sync_word": sync_word,
+                "assumed": assumed_sync_word is not None,
                 "header_offset": offset,
                 "offset": offset,
                 "score": score,
@@ -276,6 +313,7 @@ def analyze_file(request: dict) -> dict:
             sync_bits = None
             correlation = {
                 "sync_word": None,
+                "assumed": False,
                 "header_offset": -1,
                 "offset": -1,
                 "score": 0.0,
@@ -391,6 +429,29 @@ def analyze_file(request: dict) -> dict:
                 "candidates": ilv_res.get("candidates", []),
             }
 
+        # ---- Constellation quality (EVM/MER): an independent sanity check ----
+        # A low EVM means the received symbols really do land on the ideal
+        # constellation for `mode`, so a wrong modulation guess shows up as a
+        # large EVM instead of passing silently. FSK has no constellation and
+        # reports applicable=False. Equalisation/carrier recovery are V2
+        # (info.md §32), so a rotated or offset signal inflates this number.
+        samples_per_symbol = 1  # MVP hint; mirrored in `display` below
+        try:
+            quality_block = compute_evm(
+                samples, mode=mode, samples_per_symbol=samples_per_symbol
+            )
+        except Exception as exc:  # quality is a nicety, never a hard failure
+            quality_block = {
+                "applicable": False,
+                "mode": mode,
+                "modulation_order": None,
+                "evm_percent": None,
+                "mer_db": None,
+                "snr_db_from_evm": None,
+                "n_symbols": 0,
+                "error": str(exc),
+            }
+
         report = {
             "meta": {
                 "tool_name": TOOL_NAME,
@@ -428,6 +489,9 @@ def analyze_file(request: dict) -> dict:
             },
             "correlation": correlation,
             "payload": payload_block,
+            # Constellation quality: EVM/MER plus the modulation order, so a
+            # consumer can tell "BPSK at 12% EVM" from "BPSK at 180% EVM".
+            "quality": quality_block,
             # Candidate scores are blind heuristics (capped, crc_pass unknown);
             # a CRC-verified decode is reported separately and only when it
             # actually happened. See info.md §30 demo-defense lines.
@@ -436,7 +500,7 @@ def analyze_file(request: dict) -> dict:
             # MVP hint for eye diagram: current synthetic generator uses
             # 1 sample/symbol for BPSK/QPSK/2-FSK.
             "display": {
-                "samples_per_symbol": 1,
+                "samples_per_symbol": samples_per_symbol,
                 "mode": mode,
             },
             "warnings": warnings,

@@ -37,14 +37,32 @@ def estimate_center_frequency(freqs: np.ndarray, psd_db: np.ndarray) -> float:
 def estimate_bandwidth(
     freqs: np.ndarray, psd_db: np.ndarray, threshold_db: float = 10.0
 ) -> float:
-    """Estimate occupied bandwidth using noise-floor threshold."""
+    """Estimate occupied bandwidth using noise-floor threshold.
+
+    Returns the span between the lowest and highest bin that clears the median
+    noise floor by ``threshold_db``, or ``0.0`` when no usable span exists.
+
+    ``0.0`` means *unusable*, not *zero bandwidth*: a single bin above the
+    floor is not a bandwidth, so at least two bins must qualify. Callers
+    should treat ``0.0`` as "estimate unavailable" and say so rather than
+    propagating it as a measurement.
+
+    Known MVP limitation (§12, §32): the median-floor premise assumes the
+    signal peaks well above a flat noise floor. That does not hold for
+    flat-spectrum modulations such as QPSK, where ``max - median`` for a real
+    signal (~10.3 dB) is no larger than for pure noise (~11.0 dB). Lowering
+    the threshold therefore does *not* separate signal from noise -- it just
+    starts classifying noise as a wideband signal. A robust bandwidth
+    estimator (e.g. a Welch-averaged noise-floor subtraction or a
+    symbol-rate-derived estimate) is V2 work.
+    """
     freqs = np.asarray(freqs)
     psd_db = np.asarray(psd_db)
     if freqs.size == 0 or psd_db.size == 0:
         raise ValueError("Empty spectrum input.")
     noise_floor = float(np.median(psd_db))
     signal_mask = psd_db > (noise_floor + threshold_db)
-    if not np.any(signal_mask):
+    if int(np.count_nonzero(signal_mask)) < 2:
         return 0.0
     signal_freqs = freqs[signal_mask]
     return float(np.max(signal_freqs) - np.min(signal_freqs))
@@ -454,6 +472,12 @@ def compute_evm(
         ``{"applicable", "mode", "modulation_order", "evm_percent",
         "mer_db", "snr_db_from_evm", "n_symbols"}``. ``applicable`` is False
         for modulations with no constellation (e.g. FSK).
+
+    ``mer_db`` is ``None`` when the error vector is exactly zero (a noiseless
+    synthetic capture), because the ratio is then unbounded. Reporting a
+    literal ``inf`` would make the value non-serialisable -- ``Infinity`` is
+    not valid JSON and JavaScript's ``JSON.parse`` rejects it -- so the
+    absence of a measurable error is expressed as ``None`` instead.
     """
     constellation = ideal_constellation(mode)
     blank = {
@@ -495,7 +519,9 @@ def compute_evm(
 
     evm_ratio = float(np.sqrt(error_power / ideal_power))
     evm_percent = evm_ratio * 100.0
-    mer_db = float(-20.0 * np.log10(evm_ratio)) if evm_ratio > 0 else float("inf")
+    # A zero error vector means an unbounded MER. Keep it JSON-safe: `None`
+    # rather than `inf`, which is not representable in strict JSON.
+    mer_db = float(-20.0 * np.log10(evm_ratio)) if evm_ratio > 0 else None
 
     return {
         "applicable": True,
