@@ -1,10 +1,13 @@
 """Raw .IQ / .wav loading. Full spec: info.md §12.1.
 
 Contracts (do not change without updating AGENTS.md):
-- complex64 native; int16 interleaved I/Q ÷32768; uint8 offset-128 ÷128.
+- complex64 native; int16 interleaved I/Q ÷32768; uint8 offset-128 ÷128;
+  int8 (HackRF signed-8 native) interleaved I/Q ÷128.
 - Truncate odd trailing byte. Little-endian default.
 - WAV stereo L=I/R=Q; mono = real-only. Sample rate from file for WAV,
   user-supplied for .IQ.
+- Dtype aliases (case-insensitive): ci8→int8, cu8→uint8, ci16→int16,
+  cf32→complex64. Kept for SigMF/HackRF naming compatibility.
 """
 
 from __future__ import annotations
@@ -21,20 +24,36 @@ def load_iq(
     """
     Load raw IQ file.
 
-    Supported dtype:
-    - complex64
-    - int16
-    - uint8
+    Supported dtype (case-insensitive, backward compatible):
+    - complex64 (alias: cf32)
+    - int16 (alias: ci16)
+    - uint8 (alias: cu8)
+    - int8 (alias: ci8, HackRF signed-8 native: interleaved I/Q ÷128.0)
+
+    ``endian`` applies to multi-byte dtypes (int16); single-byte dtypes
+    (int8/uint8) accept the parameter for API symmetry but it is a no-op.
+    Odd trailing elements are truncated so I/Q stay paired.
     """
     file_path = Path(file_path)
 
     if not file_path.exists():
         raise FileNotFoundError(f"IQ file not found: {file_path}")
 
-    if dtype == "complex64":
+    # Normalize dtype + resolve SigMF/HackRF aliases. Keep backward compat
+    # with the historic exact strings ("complex64", "int16", "uint8").
+    _aliases = {
+        "ci8": "int8",
+        "cu8": "uint8",
+        "ci16": "int16",
+        "cf32": "complex64",
+    }
+    dtype_norm = str(dtype).lower()
+    dtype_norm = _aliases.get(dtype_norm, dtype_norm)
+
+    if dtype_norm == "complex64":
         samples = np.fromfile(file_path, dtype=np.complex64)
 
-    elif dtype == "int16":
+    elif dtype_norm == "int16":
         raw = np.fromfile(file_path, dtype=np.int16)
         if endian == "big":
             raw = raw.byteswap()
@@ -43,7 +62,18 @@ def load_iq(
         samples = raw[0::2].astype(np.float32) + 1j * raw[1::2].astype(np.float32)
         samples = samples / 32768.0
 
-    elif dtype == "uint8":
+    elif dtype_norm == "int8":
+        raw = np.fromfile(file_path, dtype=np.int8)
+        if endian == "big":
+            # No-op for single-byte elements; kept for API symmetry
+            # with the int16 path.
+            raw = raw.byteswap()
+        if len(raw) % 2 != 0:
+            raw = raw[:-1]
+        samples = raw[0::2].astype(np.float32) + 1j * raw[1::2].astype(np.float32)
+        samples = samples / 128.0
+
+    elif dtype_norm == "uint8":
         raw = np.fromfile(file_path, dtype=np.uint8)
         if len(raw) % 2 != 0:
             raw = raw[:-1]

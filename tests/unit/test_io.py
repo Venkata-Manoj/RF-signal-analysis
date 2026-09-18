@@ -99,6 +99,61 @@ def test_load_iq_truncates_odd_trailing_byte(tmp_path):
     assert len(loaded_i16) == 1
 
 
+def test_load_int8_iq(tmp_path):
+    # Arrange: HackRF signed-8 native, interleaved I/Q, ÷128.0.
+    raw = np.array([64, -64, 0, 0], dtype=np.int8)
+    file_path = tmp_path / "test_int8.iq"
+    raw.tofile(file_path)
+
+    # Act
+    loaded = load_iq(str(file_path), dtype="int8")
+
+    # Assert
+    assert len(loaded) == 2
+    assert np.isclose(loaded[0].real, 0.5, atol=1e-6)
+    assert np.isclose(loaded[0].imag, -0.5, atol=1e-6)
+    assert np.isclose(loaded[1].real, 0.0, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("alias", "canonical", "raw_dtype", "expected_real"),
+    [
+        ("ci8", "int8", np.int8, 64 / 128.0),
+        ("ci16", "int16", np.int16, 1024 / 32768.0),
+    ],
+)
+def test_sigmf_dtype_aliases_match_canonical(
+    tmp_path, alias, canonical, raw_dtype, expected_real
+):
+    """SigMF/HackRF aliases (ci8/ci16) must load identically to canonical names."""
+    # Arrange
+    raw = np.array([64 if raw_dtype is np.int8 else 1024, 0], dtype=raw_dtype)
+    path_alias = tmp_path / f"alias_{alias}.iq"
+    path_canon = tmp_path / f"canon_{canonical}.iq"
+    raw.tofile(path_alias)
+    raw.tofile(path_canon)
+
+    # Act
+    via_alias = load_iq(str(path_alias), dtype=alias)
+    via_canon = load_iq(str(path_canon), dtype=canonical)
+
+    # Assert
+    assert np.allclose(via_alias, via_canon)
+    assert np.isclose(via_alias[0].real, expected_real, atol=1e-6)
+
+
+def test_load_iq_dtype_is_case_insensitive(tmp_path):
+    # Arrange
+    raw = np.array([64, -64], dtype=np.int8)
+    file_path = tmp_path / "case.iq"
+    raw.tofile(file_path)
+
+    # Act / Assert: "CI8" and "ci8" must resolve to the same path.
+    assert np.allclose(
+        load_iq(str(file_path), dtype="CI8"), load_iq(str(file_path), dtype="ci8")
+    )
+
+
 def test_load_iq_missing_file_raises(tmp_path):
     # Arrange
     missing = tmp_path / "does_not_exist.iq"

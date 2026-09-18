@@ -63,12 +63,59 @@ def estimate_snr(psd_db: np.ndarray) -> float:
 def estimate_sampling_rate(bandwidth_estimate: float, factor: float = 2.2) -> float:
     """Naive sampling-rate hint: bandwidth * factor.
 
-    Not blind — V2 will add cyclostationary hypothesis testing.
-    Never claim precision.
+    MVP heuristic only (NTRO gap): for a band-limited signal the Nyquist
+    minimum is ``2 * BW``; ``factor=2.2`` adds ~10% guard margin for the
+    median-floor :func:`estimate_bandwidth` bias and filter roll-off.
+
+    This is intentionally coarse — it uses only the PSD bandwidth and
+    knows nothing about symbol rate or oversampling. For a refined
+    estimate that fuses the ``|x|²`` symbol-rate line (see
+    :func:`estimate_symbol_rate`), use
+    :func:`estimate_sampling_rate_wideband`.
+
+    Never claim precision — V2 will add cyclostationary hypothesis testing.
     """
     if bandwidth_estimate is None or bandwidth_estimate <= 0:
         return 0.0
     return float(bandwidth_estimate * float(factor))
+
+
+def estimate_sampling_rate_wideband(
+    bandwidth_estimate: float,
+    symbol_rate_estimate: float | None = 0.0,
+    factor: float = 2.2,
+) -> float:
+    """Fuse bandwidth and symbol-rate estimates into a sampling-rate hint.
+
+    Combines the naive ``BW * factor`` Nyquist hint with the ``|x|²``
+    spectral-line symbol-rate estimate from :func:`estimate_symbol_rate`:
+
+    * If ``symbol_rate_estimate`` is missing/non-positive, falls back to
+      :func:`estimate_sampling_rate` (BW-only path, backward compatible).
+    * Otherwise returns ``max(BW, Rs) * factor`` — the sampling rate must
+      satisfy Nyquist for the occupied bandwidth *and* oversample the
+      symbol rate, so the tighter (larger) of the two constraints wins.
+
+    Args:
+        bandwidth_estimate: Occupied bandwidth in Hz (from
+            :func:`estimate_bandwidth`).
+        symbol_rate_estimate: Symbol rate in Hz (from
+            :func:`estimate_symbol_rate`); ``None``/``<= 0`` means
+            "no reliable line found".
+        factor: Guard factor over Nyquist (default 2.2, same as
+            :func:`estimate_sampling_rate`).
+
+    Returns:
+        Fused sampling-rate estimate in Hz, or 0.0 if bandwidth is invalid.
+    """
+    narrow = estimate_sampling_rate(bandwidth_estimate, factor)
+    if symbol_rate_estimate is None or symbol_rate_estimate <= 0:
+        return narrow
+    if bandwidth_estimate is None or bandwidth_estimate <= 0:
+        return 0.0
+    return float(
+        max(float(bandwidth_estimate), float(symbol_rate_estimate)) * float(factor)
+    )
 
 
 def compute_waterfall(
@@ -195,3 +242,22 @@ def correct_cfo(
     n = np.arange(len(samples), dtype=np.float64)
     correction = np.exp(-1j * 2.0 * np.pi * freq_offset * n / sample_rate)
     return samples * correction
+
+
+def estimate_and_correct_cfo(
+    samples: np.ndarray, sample_rate: float
+) -> tuple[np.ndarray, float]:
+    """Convenience wrapper: estimate CFO then counter-rotate.
+
+    Calls :func:`estimate_cfo` to get the residual carrier offset in Hz,
+    then :func:`correct_cfo` to remove it. Naive phase-slope estimator —
+    same MVP caveats as :func:`estimate_cfo` (works on clean tones/PSK,
+    not a PLL replacement).
+
+    Returns:
+        ``(corrected_samples, cfo_hz)`` where ``corrected_samples`` has
+        the same shape/dtype-complex as the input.
+    """
+    cfo = float(estimate_cfo(samples, sample_rate))
+    corrected = correct_cfo(np.asarray(samples), sample_rate, cfo)
+    return corrected, cfo
