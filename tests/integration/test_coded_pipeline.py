@@ -16,7 +16,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from rf_analyzer.core.framing import build_frame, modulate
+from rf_analyzer.core.framing import (
+    FEC_SCHEMES,
+    INTERLEAVER_SCHEMES,
+    build_frame,
+    modulate,
+)
 from rf_analyzer.pipeline import analyze_file
 
 SAMPLE_RATE = 100_000
@@ -167,20 +172,78 @@ def test_2fsk_symbol_period_is_recovered_not_assumed(tmp_path):
     assert bytes.fromhex(report["payload"]["decoded"]["hex"]) == MESSAGE
 
 
+#: Error load per FEC scheme for the full-matrix sweep. ``none`` gets zero: an
+#: uncoded frame cannot correct anything, so injecting errors there would test
+#: the wrong thing (see test_uncoded_frame_corrects_nothing_and_says_so).
+#:
+#: LDPC gets 6 rather than 8. Its block decoder is probabilistic -- at a fixed
+#: error count the outcome depends on how the errors distribute across the
+#: 84-bit blocks -- and with the block interleaver 8 errors fail *more* often
+#: than 10 do (measured over 5 seeds: 3/5 at 8 against 5/5 at 10). Testing at
+#: the edge would make this a coin flip instead of a test of the pipeline.
+#: 6 is inside every interleaver's demonstrated tolerance.
+MATRIX_ERRORS = {"none": 0, "conv": 14, "rs": 12, "ldpc": 6, "concatenated": 16}
+
+
+@pytest.mark.parametrize("interleaver", INTERLEAVER_SCHEMES)
+@pytest.mark.parametrize("fec", FEC_SCHEMES)
+def test_every_fec_and_interleaver_combination_is_identified(
+    tmp_path, fec, interleaver
+):
+    """The search must cover the whole matrix, not just the shipped captures.
+
+    ``sample_data/coded_manifest.json`` exercises six of the thirty possible
+    combinations. This sweeps all thirty, so a scheme the search cannot actually
+    find has nowhere to hide behind the handful we happened to ship as sample
+    data.
+    """
+    path = tmp_path / f"{fec}_{interleaver}.iq"
+    _write_capture(path, fec, interleaver, "BPSK", MATRIX_ERRORS[fec])
+
+    report = analyze_file(
+        {
+            "file_path": str(path),
+            "sample_rate": SAMPLE_RATE,
+            "sync_word": SYNC_WORD,
+            "modulation": "auto",
+            **GENEROUS_BUDGET,
+        }
+    )
+
+    assert report["errors"] == [], report["errors"]
+    assert report["payload"]["decode_search"]["validated"] is True
+    assert bytes.fromhex(report["payload"]["decoded"]["hex"]) == MESSAGE
+
+    # The transmitter's scheme must be identified, not merely stumbled into.
+    assert report["fec"]["validated"] is True
+    assert report["interleaving"]["candidate"] == interleaver
+
+
 def test_interleaver_is_what_makes_ldpc_robust(tmp_path):
-    """The interleaver, not the code, is what buys burst-error tolerance.
+    """The interleaver buys *burst* tolerance -- and that is the real claim.
 
-    Measured while auditing this project: LDPC *without* an interleaver is not
-    even monotone in the error count -- 6 errors fail while 8 and 12 succeed.
-    The reason is that the injected errors cluster inside individual code
-    blocks, and a block whose error count exceeds the code's correction
-    capability fails on its own. Spreading the same errors across blocks is
-    exactly what the interleaver is for, and with it the behaviour becomes
-    monotone and the tolerance more than doubles.
+    An earlier revision of this docstring said LDPC without an interleaver is
+    "not monotone -- 6 errors fail while 8 and 12 succeed". Re-measuring over
+    five seeds did not reproduce that: with uniformly scattered errors the
+    no-interleaver case simply degrades with load (5/5 up to 8 errors, then
+    4/5, 3/5, 2/5, 2/5), and the genuinely non-monotone column is the *block*
+    interleaver (3/5 at 8 errors against 5/5 at 10).
 
-    This pins the *with-interleaver* capability, which is the shipped
-    configuration, and documents why the "no interleaver" column of a
-    FEC x interleaver matrix is not a fair comparison.
+    LDPC correction is probabilistic: at a fixed error count the outcome depends
+    on how the errors land across the 84-bit blocks, which is why a single seed
+    is not evidence either way.
+
+    What the interleaver actually earns its place on is contiguous bursts, the
+    failure mode it exists for. At a burst of 8 bits, every interleaver except
+    the pseudo-random sub-block one fails outright (0/5) and that one still
+    recovers the message 3/5 of the time. Against scattered errors it cannot
+    help, because they are spread across blocks already.
+
+    This test pins the shipped configuration (LDPC + pseudo-random-block) at 16
+    errors. Note that 16 is at the *edge* of that configuration's capability --
+    across five seeds it succeeds only 1/5 of the time -- so this is a
+    deterministic regression guard on a fixed seed, not a claim of reliable
+    correction at that load.
     """
     path = tmp_path / "ldpc_ilv.iq"
     _write_capture(path, "ldpc", "pseudo-random-block", "BPSK", 16)
