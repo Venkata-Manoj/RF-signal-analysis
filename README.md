@@ -453,6 +453,14 @@ We would rather list these than have you discover them:
   the GPS L1 capture is classified as 16-QAM. The tool flags the poor fit rather than
   hiding it. EVM is *not* used to pick a modulation, because it always favours denser
   constellations.
+- **A signal with no data on it is still given a label.** Measured on the bundled
+  samples, the FSK test (low instantaneous-frequency variance) fires for an unmodulated
+  tone, for narrowband audio and for speech, as well as for genuine 2-FSK. Those cases
+  are *not* silently accepted, though: the tool tries to recover a symbol period, fails,
+  and says so ("could not recover the 2-FSK symbol period … or not constant-envelope
+  FSK"), and it never claims a payload from them. Telling "unmodulated carrier" apart
+  from "data signal" properly needs its own class, which is a scoped follow-up rather
+  than something to bolt onto the existing heuristic.
 - **Blind FEC detection is a search, not a detector.** Nothing is reported as decoded
   without a CRC-16 pass, so an unusual or unlisted scheme will simply not be found.
 - **An uncoded frame corrects nothing, by design.** With no FEC, a single flipped bit
