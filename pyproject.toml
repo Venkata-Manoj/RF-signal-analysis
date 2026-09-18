@@ -1,5 +1,9 @@
 [tool.ruff]
 line-length = 120
+# `.opencode/` holds a vendored third-party skill (ui-ux-pro-max), not project
+# source. Without this exclusion `ruff check .` reports hundreds of errors in
+# code we do not own, which buries the errors that actually matter.
+extend-exclude = [".opencode"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "B", "C", "Q", "N", "UP", "YTT", "ASYNC", "SIM", "TCH", "RUF", "PLW"]
@@ -36,3 +40,12 @@ ignore = [
 
 [tool.ruff.format]
 docstring-code-format = true
+
+[tool.black]
+# Same rationale as the ruff exclusion above: `.opencode/` is vendored
+# third-party skill code, not this project's source.
+extend-exclude = '''
+/(
+    \.opencode
+)/
+'''

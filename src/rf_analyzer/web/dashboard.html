@@ -647,7 +647,8 @@ function drawConstellation(plot) {
       ctx.stroke();
     }
   }
-  $("#constMeta").textContent = plot.shown + " of " + I.length + " symbols shown";
+  $("#constMeta").textContent = plot.shown + " of " + I.length + " symbols shown" +
+    (plot.has_ideal === false ? " — no ideal constellation for this modulation" : "");
 }
 
 function drawPsd(plot) {

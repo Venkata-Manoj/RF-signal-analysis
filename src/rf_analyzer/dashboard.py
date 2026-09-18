@@ -66,12 +66,16 @@ def constellation_payload(
     millions of symbols and the browser canvas cannot resolve them anyway.
     """
     pts = _decimate(np.asarray(samples), max_points)
+    ideal = ideal_constellation(mode)
     payload: dict[str, Any] = {
         "i": _round_list(np.real(pts), 5),
         "q": _round_list(np.imag(pts), 5),
         "shown": int(pts.size),
+        # 2-FSK has no constellation to overlay: every sample sits on the unit
+        # circle because the information is in the frequency. Say so, so the
+        # bare ring does not read as a rendering failure.
+        "has_ideal": ideal is not None,
     }
-    ideal = ideal_constellation(mode)
     if ideal is not None:
         payload["ideal_i"] = _round_list(np.real(ideal), 5)
         payload["ideal_q"] = _round_list(np.imag(ideal), 5)

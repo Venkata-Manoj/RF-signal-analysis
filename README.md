@@ -235,6 +235,14 @@ It tells you which format it used, and warns you if the guess was not confident.
 
 **Modulation:** BPSK, QPSK, 2-FSK, 16-QAM (or `auto`).
 
+**About 2-FSK:** it is the one modulation where a bit is *not* one sample. A real 2-FSK
+burst spends many samples on each tone (the included sample spends 100), so the tool
+first recovers the symbol period from the signal itself, then decimates to one bit per
+symbol. It reports the recovered period and derives the symbol rate from it. If a period
+cannot be recovered — the signal is not constant-envelope FSK, or it is shorter than a
+few symbols — the tool says so and falls back to the documented one-bit-per-sample
+behaviour rather than guessing a period.
+
 **Forward error correction** (verified, decoded from scratch in pure NumPy):
 
 | Scheme | Detail |
@@ -301,13 +309,14 @@ if you want more material for a live demo.
 python scripts/verify_mvp.py
 ```
 
-This regenerates the test data, runs the whole test suite, and then performs **48
+This regenerates the test data, runs the whole test suite, and then performs **55
 individual checks** end to end. It prints `PASS` and exits `0` only if every one
 succeeds. It covers, among others:
 
 - the core pipeline on a clean BPSK capture (BER < 0.01, correlation > 0.9)
-- all five coded captures decoding back to the **exact transmitted message**, with the
+- all six coded captures decoding back to the **exact transmitted message**, with the
   transmitter's FEC scheme and interleaver identified from the bit stream alone
+- **2-FSK symbol-period recovery** (the one modulation that is not one sample per bit)
 - **no payload invented** from random bits, and blind FEC scores staying capped
 - IQ-format auto-detection
 - batch CSV/HTML export
@@ -319,7 +328,7 @@ succeeds. It covers, among others:
 Other useful commands:
 
 ```powershell
-pytest                                        # the full suite (366 tests)
+pytest                                        # the full suite (389 tests)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
 $env:QT_QPA_PLATFORM="offscreen"; pytest tests/integration -q   # GUI tests, headless
@@ -397,7 +406,7 @@ Use `python`, not `python3`.
 | --- | --- |
 | Analyse `.IQ` and `.wav` files | `core/io.py` — raw IQ in four dtypes plus WAV, with auto-detection |
 | Extract signal parameters (sampling frequency, modulation, FEC, interleaving) | `core/dsp.py`, `core/classifier.py`, `core/fec.py`, `core/deinterleave.py` |
-| Demodulate FSK, PSK, QAM | `core/demod.py` — 2-FSK, BPSK, QPSK, 16-QAM |
+| Demodulate FSK, PSK, QAM | `core/demod.py` — 2-FSK, BPSK, QPSK, 16-QAM. 2-FSK also recovers its own symbol period (`core/dsp.py`), so a real burst with many samples per bit is decodable end to end |
 | De-interleave: Block, Convolution, Diagonal, Pseudo-Random | `core/deinterleave.py` — all four, plus a sub-block pseudo-random variant |
 | FEC: convolutional + Viterbi, Reed–Solomon, concatenated, LDPC | `core/fec.py` — all implemented from scratch and CRC-verified |
 | Bit stream correlation | `core/correlator.py` — with false-alarm control so long captures cannot fake a header |
@@ -424,6 +433,10 @@ We would rather list these than have you discover them:
   uses a median-noise-floor rule, and there is no timing recovery, carrier recovery or
   equalisation. A rotated or frequency-offset signal inflates the EVM. These are
   documented V2 items in `info.md` §32.
+- **2-FSK symbol-period recovery needs a few samples per symbol.** Below about five
+  samples per symbol the piecewise-constant model cannot be told apart from noise, so the
+  period is reported as unrecovered and the naive one-bit-per-sample path is used. The
+  tool never invents a period it cannot reconstruct.
 - **The bandwidth estimator cannot measure flat-spectrum signals** such as QPSK, where a
   real signal's peak-above-noise-floor is no larger than pure noise's. Rather than lower
   the threshold (which would start classifying noise as signal), the tool reports the
