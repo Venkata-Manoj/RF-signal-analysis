@@ -19,3 +19,6 @@ sample_data/coded_manifest.json
 # Real-world captures downloaded for testing: large binaries, not source.
 real_data/*
 !real_data/.gitkeep
+
+# Agent working memory / scratch for this project (not source).
+.workbuddy-ai/
