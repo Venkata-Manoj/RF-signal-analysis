@@ -33,3 +33,28 @@ MODULATION_FIT_CANDIDATES = ("BPSK", "QPSK", "8PSK", "16-QAM", "64-QAM")
 
 #: Symbol cap for the fit cross-check, so a multi-megabit capture stays fast.
 MODULATION_FIT_MAX_SAMPLES = 100_000
+
+# 2-FSK symbol-period (samples per symbol) recovery.
+#
+# The MVP demodulator works one bit per sample, which is only correct when the
+# capture already has one sample per symbol. A real 2-FSK burst does not: the
+# project's own sample_data/fsk2.iq spends 100 samples on every bit, so the
+# naive path smears each bit across 100 demodulated samples and the sync word
+# can never be found. estimate_fsk_symbol_period recovers the true period by
+# fitting a piecewise-constant model to the instantaneous frequency.
+#
+# Below this period the piecewise-constant model has too few samples per
+# symbol to be distinguishable from noise, so the estimator declines and the
+# demodulator falls back to its documented 1-bit-per-sample behaviour.
+FSK_MIN_SYMBOL_PERIOD = 3
+
+#: Largest reconstruction residual accepted as "this really is the period".
+#: A correct period reconstructs the instantaneous frequency almost exactly
+#: (residual ~ 0, or ~1/period for a generator that repeats one sample at each
+#: symbol boundary); a wrong one leaves ~0.25 of the mean amplitude unexplained.
+FSK_MAX_RECONSTRUCTION_RESIDUAL = 0.15
+
+#: Transmit-side 2-FSK defaults, shared by framing.modulate and the generator.
+FSK_SYMBOL_DURATION_S = 0.001
+FSK_FREQ_LOW_HZ = -5000.0
+FSK_FREQ_HIGH_HZ = 5000.0

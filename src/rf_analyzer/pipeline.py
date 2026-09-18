@@ -47,6 +47,7 @@ from rf_analyzer.core.dsp import (
     estimate_bandwidth,
     estimate_center_frequency,
     estimate_cfo,
+    estimate_fsk_symbol_period,
     estimate_sampling_rate,
     estimate_snr,
     estimate_symbol_rate,
@@ -259,14 +260,38 @@ def analyze_file(request: dict) -> dict:
             alternatives = []
             mode = "BPSK"
 
+        # Samples per symbol actually used by the demodulator. BPSK/QPSK/16-QAM
+        # in this MVP are one sample per symbol by construction; 2-FSK is not,
+        # so its period is recovered from the instantaneous frequency below.
+        samples_per_symbol = 1
+
         if mode == "BPSK":
             bits = demod_bpsk(samples)
         elif mode == "QPSK":
             bits = demod_qpsk(samples)
         elif mode in ("2-FSK", "2FSK"):
-            # Per-sample instantaneous-frequency demod; symbol-timing
-            # recovery (samples_per_symbol handling) is a V2 concern.
-            bits = demod_2fsk(samples)
+            # A real 2-FSK burst spends many samples on each bit, and the naive
+            # one-bit-per-sample path would then emit the same bit dozens of
+            # times in a row -- the sync word can never be found that way. The
+            # period is recovered from the piecewise-constant instantaneous
+            # frequency; if it cannot be recovered the estimator returns 1 and
+            # the documented naive behaviour is preserved.
+            samples_per_symbol = estimate_fsk_symbol_period(samples)
+            bits = demod_2fsk(samples, samples_per_symbol)
+            if samples_per_symbol > 1:
+                # The |x|^2 spectral-line symbol-rate estimate assumes a
+                # non-constant envelope and is meaningless for constant-modulus
+                # FSK (it reported 395 kHz for a 1 kHz burst). The recovered
+                # period is a direct measurement, so prefer it.
+                symbol_rate_estimate = float(sample_rate) / float(samples_per_symbol)
+            else:
+                warnings.append(
+                    "Could not recover the 2-FSK symbol period (the capture may "
+                    "be shorter than a few symbols, or not constant-envelope "
+                    "FSK). Demodulated at the MVP default of one bit per "
+                    "sample, so the bit stream is oversampled by the unknown "
+                    "number of samples per symbol."
+                )
         elif mode == "16-QAM":
             bits = demod_qam16(samples)
         else:  # pragma: no cover - defensive; mode is normalized above
@@ -474,7 +499,6 @@ def analyze_file(request: dict) -> dict:
         # large EVM instead of passing silently. FSK has no constellation and
         # reports applicable=False. Equalisation/carrier recovery are V2
         # (info.md §32), so a rotated or offset signal inflates this number.
-        samples_per_symbol = 1  # MVP hint; mirrored in `display` below
         try:
             quality_block = compute_evm(
                 samples, mode=mode, samples_per_symbol=samples_per_symbol

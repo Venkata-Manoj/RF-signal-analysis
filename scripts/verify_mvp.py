@@ -157,6 +157,79 @@ def check_coded_captures(checks: Checks) -> None:
         )
 
 
+def check_2fsk_symbol_recovery(checks: Checks) -> None:
+    """2-FSK must be decimated to one bit per symbol, and say so honestly.
+
+    "Demodulate FSK" is only genuinely satisfied if the receiver copes with a
+    capture that spends many samples on each bit. The naive one-bit-per-sample
+    path smears the sync word past every threshold, so this checks the recovered
+    period, the derived symbol rate and the resulting bit count -- and that a
+    signal with no symbol structure is *not* given a period.
+    """
+    import numpy as np
+
+    from rf_analyzer.core.dsp import estimate_fsk_symbol_period
+    from rf_analyzer.core.io import load_iq
+    from rf_analyzer.pipeline import analyze_file
+
+    fsk_path = ROOT / "sample_data" / "fsk2.iq"
+    if not fsk_path.exists():
+        checks.check("2-FSK sample present", False, str(fsk_path))
+        return
+
+    samples = load_iq(str(fsk_path), dtype="complex64")
+    period = estimate_fsk_symbol_period(samples)
+    checks.check(
+        "2-FSK sample: symbol period recovered",
+        period == 100,
+        f"period={period} samples (generator used 100)",
+    )
+
+    report = analyze_file(
+        {
+            "file_path": str(fsk_path),
+            "sample_rate": 100_000,
+            "iq_format": "complex64",
+            "modulation": "auto",
+            "sync_word": "0x1ACFFC1D",
+        }
+    )
+    checks.check(
+        "2-FSK sample: modulation classified",
+        report.get("modulation", {}).get("estimated_type") == "2-FSK",
+        f"estimated={report.get('modulation', {}).get('estimated_type')}",
+    )
+    checks.check(
+        "2-FSK sample: symbol rate derived from the period",
+        report.get("signal", {}).get("symbol_rate_estimate") == 1000.0,
+        f"symbol_rate={report.get('signal', {}).get('symbol_rate_estimate')} Hz "
+        "(1 ms symbols at 100 kHz)",
+    )
+    correlation = report.get("correlation", {})
+    checks.check(
+        "2-FSK sample: sync word found in the decimated stream",
+        correlation.get("detected") is True
+        and float(correlation.get("score") or 0.0) > 0.9,
+        f"score={correlation.get('score')} offset={correlation.get('offset')}",
+    )
+
+    # Negative controls: a period must never be invented for a signal that has
+    # no symbol structure, because the pipeline would then decimate it.
+    rng = np.random.default_rng(7)
+    bits = rng.integers(0, 2, size=4096, dtype=np.uint8)
+    bpsk = (2.0 * bits - 1.0).astype(np.complex64)
+    noise = (rng.standard_normal(40_000) + 1j * rng.standard_normal(40_000)).astype(
+        np.complex64
+    )
+    checks.check(
+        "2-FSK period declines on non-FSK signals",
+        estimate_fsk_symbol_period(bpsk) == 1
+        and estimate_fsk_symbol_period(noise) == 1,
+        f"bpsk={estimate_fsk_symbol_period(bpsk)} "
+        f"noise={estimate_fsk_symbol_period(noise)}",
+    )
+
+
 def check_payload_honesty(checks: Checks) -> None:
     """Random bits must never be reported as a decoded message."""
     import numpy as np
@@ -197,7 +270,14 @@ def check_payload_honesty(checks: Checks) -> None:
             f"{len(report.get('warnings', []))} warning(s)",
         )
     finally:
-        noise_path.unlink(missing_ok=True)
+        # Best-effort scratch cleanup. A scratch file that cannot be removed
+        # (locked, read-only, or blocked by a sandbox policy) must not turn a
+        # passing verification into a failure: what is being verified is the
+        # report, not the tidiness of `output/`.
+        try:
+            noise_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def check_auto_detection(checks: Checks) -> None:
@@ -266,8 +346,12 @@ def check_batch_exports(checks: Checks) -> None:
             f"{html_path.stat().st_size} bytes",
         )
     finally:
+        # Best-effort scratch cleanup -- see the note in check_payload_honesty.
         for name in ("_verify_batch.csv", "_verify_batch.html"):
-            (out / name).unlink(missing_ok=True)
+            try:
+                (out / name).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def check_report_schema(checks: Checks) -> None:
@@ -542,6 +626,7 @@ def main() -> int:
     for step, fn in (
         ("core pipeline", check_pipeline),
         ("coded captures (FEC + de-interleaving)", check_coded_captures),
+        ("2-FSK symbol-period recovery", check_2fsk_symbol_recovery),
         ("payload honesty", check_payload_honesty),
         ("IQ-format auto-detection", check_auto_detection),
         ("batch export", check_batch_exports),

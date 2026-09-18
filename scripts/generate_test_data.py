@@ -27,7 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from rf_analyzer.core.framing import build_frame, modulate
+from rf_analyzer.core.framing import build_frame, modulate, modulate_2fsk
 
 SAMPLE_RATE = 100_000
 OUTPUT_DIR = REPO_ROOT / "sample_data"
@@ -100,17 +100,15 @@ def generate_2fsk(
     freq_low: float = -5000,
     freq_high: float = 5000,
 ):
-    samples_per_symbol = int(sample_rate * symbol_duration)
-    phase = 0.0
-    samples = []
-    for bit in bits:
-        freq = freq_high if bit == 1 else freq_low
-        t = np.arange(samples_per_symbol) / sample_rate
-        segment = np.exp(1j * (2 * np.pi * freq * t + phase))
-        samples.append(segment)
-        phase = np.angle(segment[-1])
-    samples = np.concatenate(samples).astype(np.complex64)
-    return samples
+    """2-FSK capture. Delegates to the shared modulator (info.md §15.1 phase
+    convention) so the generator and the transmit path cannot drift apart."""
+    return modulate_2fsk(
+        bits,
+        sample_rate,
+        symbol_duration=symbol_duration,
+        freq_low=freq_low,
+        freq_high=freq_high,
+    )
 
 
 def hex_to_bits(hex_string: str, bit_length: int | None = None):
@@ -204,6 +202,18 @@ CODED_CAPTURES = [
         "modulation": "QPSK",
         "errors": 16,
     },
+    {
+        # 2-FSK is the one modulation whose samples-per-symbol is not 1, so it
+        # exercises the symbol-period recovery path rather than just the
+        # decision device. Without it, "demodulate FSK" would only ever be
+        # proven at the bit level, never end to end through the payload chain.
+        "name": "coded_fsk",
+        "message": b"SIH26147 2-FSK frame: K=7 convolutional code, block interleaver, 1 ms tones.",
+        "fec": "conv",
+        "interleaver": "block",
+        "modulation": "2-FSK",
+        "errors": 10,
+    },
 ]
 
 
@@ -242,7 +252,7 @@ def generate_coded_captures() -> list[dict]:
         corrupted, flipped = inject_bit_errors(
             frame["bits"], spec["errors"], seed=1000 + i, start=sync_len
         )
-        samples = modulate(corrupted, spec["modulation"])
+        samples = modulate(corrupted, spec["modulation"], sample_rate=SAMPLE_RATE)
         path = OUTPUT_DIR / f"{spec['name']}.iq"
         save_iq(path, samples)
 

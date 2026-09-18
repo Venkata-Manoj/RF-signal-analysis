@@ -38,7 +38,12 @@ from typing import Any
 
 import numpy as np
 
-from rf_analyzer.config import DEFAULT_SYNC_WORD
+from rf_analyzer.config import (
+    DEFAULT_SYNC_WORD,
+    FSK_FREQ_HIGH_HZ,
+    FSK_FREQ_LOW_HZ,
+    FSK_SYMBOL_DURATION_S,
+)
 from rf_analyzer.core.correlator import hex_to_bits
 from rf_analyzer.core.deinterleave import (
     DEFAULT_COLS,
@@ -72,7 +77,7 @@ INTERLEAVER_SCHEMES = (
     "pseudo-random",
     "pseudo-random-block",
 )
-MODULATION_SCHEMES = ("BPSK", "QPSK", "16-QAM")
+MODULATION_SCHEMES = ("BPSK", "QPSK", "16-QAM", "2-FSK")
 
 
 def _pad_bits(bits: np.ndarray, block: int) -> np.ndarray:
@@ -146,16 +151,90 @@ def apply_interleaver(
     return interleave_pseudo_random(arr, seed, random_block)
 
 
-def modulate(bits: np.ndarray, mode: str = "BPSK") -> np.ndarray:
-    """Map hard bits onto complex baseband symbols (1 symbol per bit/symbol).
+def modulate_2fsk(
+    bits: np.ndarray,
+    sample_rate: float,
+    *,
+    symbol_duration: float = FSK_SYMBOL_DURATION_S,
+    freq_low: float = FSK_FREQ_LOW_HZ,
+    freq_high: float = FSK_FREQ_HIGH_HZ,
+) -> np.ndarray:
+    """Continuous-phase 2-FSK modulator: one tone per bit, ``sps`` samples each.
 
-    Only the phase-aligned linear modulations the MVP demodulator understands
-    are offered here; 2-FSK needs a sample rate and is built by the generator.
+    ``sps = int(sample_rate * symbol_duration)``. Unlike the linear
+    modulations this returns ``sps * len(bits)`` samples rather than one sample
+    per bit, which is why it needs ``sample_rate`` and why the receiver must
+    recover the period (``dsp.estimate_fsk_symbol_period``) before it can
+    demodulate at all.
+
+    The phase convention is the one in ``info.md`` §15.1, which this module is
+    the single source of truth for: a symbol's phase carries over from the
+    previous symbol's last sample, so the waveform is continuous and each
+    symbol contributes ``sps - 1`` sample intervals plus one repeated boundary
+    sample. ``scripts/generate_test_data.py`` calls this function rather than
+    keeping its own copy, so the generator and the transmit path cannot drift.
+
+    Parameters default to the project's reference 2-FSK configuration
+    (1 ms symbols, +/-5 kHz), also held in ``config``.
+    """
+    arr = np.asarray(bits, dtype=np.uint8).ravel()
+    samples_per_symbol = int(float(sample_rate) * float(symbol_duration))
+    if samples_per_symbol < 2:
+        raise ValueError(
+            f"symbol_duration {symbol_duration!r} at sample_rate {sample_rate!r} "
+            f"gives {samples_per_symbol} sample(s) per symbol; 2-FSK needs at least 2."
+        )
+    if arr.size == 0:
+        return np.array([], dtype=np.complex64)
+
+    tone = np.where(arr == 1, float(freq_high), float(freq_low))
+    radians_per_hz = 2.0 * np.pi / float(sample_rate)
+    # Phase carried into each symbol: the previous symbol advanced by
+    # (sps - 1) sample intervals, matching info.md §15.1.
+    advance = tone * ((samples_per_symbol - 1) * radians_per_hz)
+    carried = np.concatenate([[0.0], np.cumsum(advance)[:-1]])
+    within = (
+        np.tile(np.arange(samples_per_symbol), arr.size)
+        * np.repeat(tone, samples_per_symbol)
+        * radians_per_hz
+    )
+    phase = np.repeat(carried, samples_per_symbol) + within
+    return np.exp(1j * phase).astype(np.complex64)
+
+
+def modulate(
+    bits: np.ndarray,
+    mode: str = "BPSK",
+    *,
+    sample_rate: float | None = None,
+    symbol_duration: float = FSK_SYMBOL_DURATION_S,
+    freq_low: float = FSK_FREQ_LOW_HZ,
+    freq_high: float = FSK_FREQ_HIGH_HZ,
+) -> np.ndarray:
+    """Map hard bits onto complex baseband samples.
+
+    BPSK, QPSK and 16-QAM return one symbol per bit (or per 2/4 bits), so no
+    sample rate is needed. 2-FSK returns ``samples_per_symbol`` samples per
+    bit and therefore *requires* ``sample_rate``; passing ``None`` raises rather
+    than inventing a rate.
     """
     mode = mode.upper().replace("QAM16", "16-QAM")
     if mode not in MODULATION_SCHEMES:
         raise ValueError(
             f"unsupported modulation {mode!r}; pick one of {MODULATION_SCHEMES}"
+        )
+    if mode == "2-FSK":
+        if sample_rate is None:
+            raise ValueError(
+                "2-FSK needs sample_rate (it produces many samples per bit, "
+                "unlike BPSK/QPSK/16-QAM)."
+            )
+        return modulate_2fsk(
+            bits,
+            sample_rate,
+            symbol_duration=symbol_duration,
+            freq_low=freq_low,
+            freq_high=freq_high,
         )
     arr = np.asarray(bits, dtype=np.uint8).ravel()
     if mode == "BPSK":
@@ -235,4 +314,5 @@ __all__ = [
     "decode_frame_bits",
     "encode_fec",
     "modulate",
+    "modulate_2fsk",
 ]
