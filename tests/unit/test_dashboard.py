@@ -68,6 +68,7 @@ def test_constellation_returns_scatter_and_ideal_points():
     assert len(payload["i"]) == len(payload["q"])
     assert 0 < payload["shown"] <= 200
     assert len(payload["ideal_i"]) == 2  # BPSK has two ideal points
+    assert payload["has_ideal"] is True
 
 
 def test_constellation_respects_max_points():
@@ -80,6 +81,9 @@ def test_constellation_has_no_ideal_points_for_fsk():
     payload = constellation_payload(_noisy(64), "2-FSK")
     assert "ideal_i" not in payload
     assert "ideal_q" not in payload
+    # The UI needs to know this is expected, not a rendering failure: every
+    # 2-FSK sample sits on the unit circle, so there is nothing to overlay.
+    assert payload["has_ideal"] is False
 
 
 def test_constellation_survives_non_finite_samples():

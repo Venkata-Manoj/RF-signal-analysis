@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -9,6 +11,7 @@ from rf_analyzer.core.dsp import (
     compute_psd,
     estimate_bandwidth,
     estimate_center_frequency,
+    estimate_fsk_symbol_period,
     estimate_snr,
 )
 
@@ -128,3 +131,90 @@ def test_narrowband_tone_is_still_measurable():
     freqs, psd_db = compute_psd(samples, sample_rate, nfft=4096)
     bw = estimate_bandwidth(freqs, psd_db)
     assert bw > 0.0
+
+
+# ---- 2-FSK symbol-period recovery ------------------------------------------
+#
+# The MVP demodulator works one bit per sample. That is only correct when the
+# capture already has one sample per symbol; a real 2-FSK burst does not. These
+# tests pin the estimator that recovers the period, including the cases where it
+# must decline rather than guess.
+
+
+def _fsk(bits, samples_per_symbol, sample_rate=100_000, dev=5000.0):
+    """Continuous-phase 2-FSK, info.md §15.1 phase convention."""
+    tone = np.where(np.asarray(bits, dtype=np.uint8) == 1, dev, -dev)
+    advance = tone * ((samples_per_symbol - 1) * 2 * np.pi / sample_rate)
+    carried = np.concatenate([[0.0], np.cumsum(advance)[:-1]])
+    within = (
+        np.tile(np.arange(samples_per_symbol), tone.size)
+        * np.repeat(tone, samples_per_symbol)
+        * (2 * np.pi / sample_rate)
+    )
+    return np.exp(1j * (np.repeat(carried, samples_per_symbol) + within)).astype(
+        np.complex64
+    )
+
+
+@pytest.mark.parametrize("period", [8, 13, 20, 50, 100, 200, 500, 1000])
+def test_fsk_symbol_period_is_recovered(period):
+    """Every supported period must be recovered exactly, not approximately.
+
+    A period that is off by even one sample accumulates a drift of one symbol
+    per `period` symbols, so the recovered bit stream develops insertions and
+    the sync word stops matching. "Close" is not good enough here.
+    """
+    rng = np.random.default_rng(11)
+    bits = rng.integers(0, 2, size=400, dtype=np.uint8)
+    assert estimate_fsk_symbol_period(_fsk(bits, period)) == period
+
+
+def test_fsk_period_of_real_capture_is_exact():
+    """The project's own sample must recover the period the generator used."""
+    from rf_analyzer.core.io import load_iq
+
+    path = Path(__file__).resolve().parents[2] / "sample_data" / "fsk2.iq"
+    if not path.exists():
+        pytest.skip("run scripts/generate_test_data.py first")
+    samples = load_iq(str(path), dtype="complex64")
+    # 1 ms symbols at the generator's 100 kHz rate.
+    assert estimate_fsk_symbol_period(samples) == 100
+
+
+def test_fsk_period_declines_on_non_fsk_signals():
+    """A wrong period is worse than no period, so non-FSK must return 1.
+
+    Constant-modulus FSK is the only case the piecewise-constant model
+    describes. BPSK/QPSK/noise/tone must not be assigned a period, because the
+    pipeline would then decimate a signal that has no symbol structure to
+    recover.
+    """
+    rng = np.random.default_rng(5)
+    bits = rng.integers(0, 2, size=4096, dtype=np.uint8)
+    bpsk = (2.0 * bits - 1.0).astype(np.complex64)
+    qpsk = ((2.0 * bits[0::2] - 1.0) + 1j * (2.0 * bits[1::2] - 1.0)).astype(
+        np.complex64
+    ) / np.sqrt(2.0)
+    noise = (rng.standard_normal(40_000) + 1j * rng.standard_normal(40_000)).astype(
+        np.complex64
+    )
+    tone = generate_tone(freq=10_000, sample_rate=100_000, duration=0.4)
+
+    for name, samples in (
+        ("BPSK", bpsk),
+        ("QPSK", qpsk),
+        ("noise", noise),
+        ("tone", tone),
+    ):
+        assert estimate_fsk_symbol_period(samples) == 1, name
+
+
+def test_fsk_period_declines_on_short_capture():
+    """Too few samples to establish any period: decline, do not guess."""
+    assert estimate_fsk_symbol_period(np.array([], dtype=np.complex64)) == 1
+    assert estimate_fsk_symbol_period(np.ones(8, dtype=np.complex64)) == 1
+
+
+def test_fsk_period_declines_on_constant_signal():
+    """A DC signal has no instantaneous frequency to model at all."""
+    assert estimate_fsk_symbol_period(np.ones(4096, dtype=np.complex64)) == 1

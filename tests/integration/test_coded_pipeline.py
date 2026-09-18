@@ -29,6 +29,10 @@ CASES = [
     ("rs", "block", "BPSK", 12, "RS(255,223)"),
     ("ldpc", "pseudo-random-block", "BPSK", 8, "LDPC"),
     ("concatenated", "diagonal", "QPSK", 16, "Concatenated RS(255,223) + Conv K=7"),
+    # 2-FSK is the only case whose capture has more than one sample per symbol,
+    # so it is the only one that proves the symbol-period recovery path. Without
+    # it, "demodulate FSK" would never be verified past the decision device.
+    ("conv", "block", "2-FSK", 10, "Convolutional r=1/2 K=7"),
 ]
 
 MESSAGE = b"SIH26147 end-to-end verification payload: FEC plus de-interleaving."
@@ -50,7 +54,9 @@ def _write_capture(path, fec, interleaver, modulation, n_errors, seed=99):
         rng = np.random.default_rng(seed)
         idx = rng.choice(np.arange(sync_len, bits.size), size=n_errors, replace=False)
         bits[idx] ^= 1
-    samples = modulate(bits, modulation)
+    # 2-FSK is the one modulation that needs a sample rate (it emits many
+    # samples per bit); the linear modulations ignore the keyword.
+    samples = modulate(bits, modulation, sample_rate=SAMPLE_RATE)
     samples.astype(np.complex64).tofile(path)
     return frame
 
@@ -124,6 +130,41 @@ def test_raw_payload_is_labelled_as_still_coded(
     assert raw["bytes"] > len(MESSAGE)  # FEC expands the frame
     assert raw["content_type"] in ("binary", "mixed")
     assert MESSAGE.decode("utf-8") not in raw["text_preview"]
+
+
+def test_2fsk_symbol_period_is_recovered_not_assumed(tmp_path):
+    """A 2-FSK capture must be decimated to one bit per symbol, not per sample.
+
+    The naive MVP path emits one bit per *sample*. On a capture that spends 100
+    samples on every symbol that yields 100 identical bits in a row, which
+    smears the sync word past any threshold and leaves a payload that can never
+    be framed. This test pins the recovered period, the derived symbol rate and
+    the resulting bit count, so a regression to the naive path fails loudly
+    instead of just quietly returning "no decode".
+    """
+    path = tmp_path / "fsk.iq"
+    frame = _write_capture(path, "conv", "block", "2-FSK", 10)
+
+    report = analyze_file(
+        {
+            "file_path": str(path),
+            "sample_rate": SAMPLE_RATE,
+            "sync_word": SYNC_WORD,
+            "modulation": "auto",
+            **GENEROUS_BUDGET,
+        }
+    )
+
+    # 1 ms symbols at 100 kHz.
+    assert report["modulation"]["estimated_type"] == "2-FSK"
+    assert report["display"]["samples_per_symbol"] == 100
+    assert report["signal"]["symbol_rate_estimate"] == pytest.approx(1000.0)
+    assert report["demodulation"]["num_bits"] == frame["bits"].size
+
+    assert report["correlation"]["detected"] is True
+    assert report["correlation"]["score"] > 0.9
+    assert report["payload"]["decoded"]["crc_pass"] is True
+    assert bytes.fromhex(report["payload"]["decoded"]["hex"]) == MESSAGE
 
 
 def test_decode_can_be_disabled(tmp_path):

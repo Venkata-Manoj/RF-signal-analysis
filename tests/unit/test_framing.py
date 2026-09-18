@@ -25,6 +25,7 @@ from rf_analyzer.core.framing import (
     build_frame,
     encode_fec,
     modulate,
+    modulate_2fsk,
 )
 from rf_analyzer.core.payload import slice_payload
 
@@ -93,6 +94,72 @@ class TestModulate:
     def test_unknown_modulation_is_rejected(self):
         with pytest.raises(ValueError, match="unsupported modulation"):
             modulate(np.zeros(16, dtype=np.uint8), "OFDM")
+
+
+class TestModulate2Fsk:
+    """2-FSK is the one modulation whose sample count is not the bit count."""
+
+    SAMPLE_RATE = 100_000
+
+    def test_one_tone_per_bit_with_constant_envelope(self):
+        bits = np.array([1, 0, 1, 1, 0], dtype=np.uint8)
+        samples = modulate_2fsk(bits, self.SAMPLE_RATE)
+        # 1 ms symbols at 100 kHz.
+        assert samples.size == bits.size * 100
+        # Constant modulus: 2-FSK carries information in frequency only.
+        assert np.allclose(np.abs(samples), 1.0, atol=1e-6)
+
+    def test_matches_the_info_md_15_1_reference_implementation(self):
+        """The phase convention must be the authoritative starter-code one.
+
+        scripts/generate_test_data.py used to carry its own copy of this loop.
+        Both now call this function, so this test is what keeps the documented
+        §15.1 waveform and the shipped waveform from diverging.
+        """
+        rng = np.random.default_rng(3)
+        bits = rng.integers(0, 2, size=120, dtype=np.uint8)
+        samples_per_symbol = 100
+
+        phase = 0.0
+        reference = []
+        for bit in bits:
+            freq = 5000.0 if bit == 1 else -5000.0
+            t = np.arange(samples_per_symbol) / self.SAMPLE_RATE
+            segment = np.exp(1j * (2 * np.pi * freq * t + phase))
+            reference.append(segment)
+            phase = np.angle(segment[-1])
+
+        expected = np.concatenate(reference).astype(np.complex64)
+        assert np.allclose(modulate_2fsk(bits, self.SAMPLE_RATE), expected, atol=1e-6)
+
+    def test_round_trips_through_the_demodulator(self):
+        from rf_analyzer.core.demod import demod_2fsk
+
+        rng = np.random.default_rng(4)
+        bits = rng.integers(0, 2, size=300, dtype=np.uint8)
+        samples = modulate_2fsk(bits, self.SAMPLE_RATE)
+        assert np.array_equal(demod_2fsk(samples, 100), bits)
+
+    def test_dispatch_requires_a_sample_rate(self):
+        """2-FSK cannot infer its rate, so it must refuse rather than invent one."""
+        with pytest.raises(ValueError, match="needs sample_rate"):
+            modulate(np.zeros(16, dtype=np.uint8), "2-FSK")
+
+    def test_dispatch_matches_the_dedicated_function(self):
+        bits = np.array([1, 0, 1], dtype=np.uint8)
+        assert np.array_equal(
+            modulate(bits, "2-FSK", sample_rate=self.SAMPLE_RATE),
+            modulate_2fsk(bits, self.SAMPLE_RATE),
+        )
+
+    def test_symbol_shorter_than_two_samples_is_rejected(self):
+        with pytest.raises(ValueError, match="at least 2"):
+            modulate_2fsk(
+                np.array([1, 0], dtype=np.uint8), 100_000, symbol_duration=1e-5
+            )
+
+    def test_empty_input_is_an_empty_capture(self):
+        assert modulate_2fsk(np.array([], dtype=np.uint8), self.SAMPLE_RATE).size == 0
 
 
 class TestBuildFrame:
