@@ -146,6 +146,8 @@ def analyze_file(request: dict) -> dict:
             "sync_word": "0x1ACFFC1D",   # optional hex string
             "decode": True,              # run the CRC-verified FEC search
             "frame_bits": None,          # optional coded-region length hint
+            "decode_max_bits": 16384,    # optional search prefix cap
+            "decode_time_budget_s": 4.0, # optional wall-clock ceiling
         }
 
     Returns a report dict per info.md §13, extended with a ``payload`` block
@@ -297,14 +299,32 @@ def analyze_file(request: dict) -> dict:
         # unless an independent CRC-16 check passes (info.md §30).
         decode_enabled = bool(request.get("decode", True))
         frame_bits = request.get("frame_bits")
+        # The search is wall-clock bounded so a huge capture cannot blow the
+        # §NFR-03 budget. Both limits are overridable per request: a caller who
+        # knows the frame is long can raise them, and a correctness test can
+        # raise them to remove timing from the assertion.
+        try:
+            decode_max_bits = int(
+                request.get("decode_max_bits", DECODE_MAX_BITS) or DECODE_MAX_BITS
+            )
+        except (TypeError, ValueError):
+            decode_max_bits = DECODE_MAX_BITS
+        try:
+            decode_budget = float(
+                request.get("decode_time_budget_s", DECODE_TIME_BUDGET_S)
+                or DECODE_TIME_BUDGET_S
+            )
+        except (TypeError, ValueError):
+            decode_budget = DECODE_TIME_BUDGET_S
+
         decode_res: dict | None = None
         if decode_enabled:
             try:
                 decode_res = search_interleaver(
                     bits,
                     start_offset=payload_start,
-                    max_bits=DECODE_MAX_BITS,
-                    time_budget_s=DECODE_TIME_BUDGET_S,
+                    max_bits=decode_max_bits,
+                    time_budget_s=decode_budget,
                     frame_bits=int(frame_bits) if frame_bits else None,
                 )
             except Exception as exc:  # a failed search is a miss, not an error
@@ -327,7 +347,8 @@ def analyze_file(request: dict) -> dict:
             "budget_exhausted": (
                 bool(decode_res.get("budget_exhausted", False)) if decode_res else False
             ),
-            "max_bits": DECODE_MAX_BITS,
+            "max_bits": decode_max_bits,
+            "time_budget_s": decode_budget,
         }
         if decode_enabled and not validated:
             warnings.append(

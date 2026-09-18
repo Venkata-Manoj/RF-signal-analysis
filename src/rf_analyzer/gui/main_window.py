@@ -32,17 +32,20 @@ try:
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QAction
     from PyQt6.QtWidgets import (
+        QCheckBox,
         QComboBox,
         QDoubleSpinBox,
         QFileDialog,
         QFormLayout,
         QGroupBox,
+        QInputDialog,
         QLabel,
         QLineEdit,
         QMainWindow,
         QMessageBox,
         QPlainTextEdit,
         QPushButton,
+        QSpinBox,
         QSplitter,
         QTableWidget,
         QTableWidgetItem,
@@ -89,6 +92,15 @@ QLabel#stale_badge {
     font-weight: 700;
 }
 QLabel#last_analysis_label { color: #94A3B8; font-size: 11px; }
+QLabel#payload_badge {
+    background-color: #1A1E2F; color: #94A3B8;
+    border: 1px solid #334155; border-radius: 4px; padding: 6px 10px;
+    font-weight: 700;
+}
+QLabel#payload_badge[verified="true"] {
+    background-color: #14532D; color: #4ADE80; border: 1px solid #16A34A;
+}
+QLabel#payload_meta_label { color: #94A3B8; font-size: 11px; }
 QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox {
     background-color: #1A1E2F; color: #F8FAFC;
     border: 1px solid #334155; border-radius: 4px; padding: 5px;
@@ -195,12 +207,18 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.action_open = QAction("&Open File…", self)
         self.action_open.setShortcut("Ctrl+O")
         self.action_open.triggered.connect(self.open_file)
+        self.action_open_demo = QAction("Open &Demo Capture…", self)
+        self.action_open_demo.setToolTip(
+            "Pick one of the generated sample_data captures and load it"
+        )
+        self.action_open_demo.triggered.connect(self.open_demo_capture)
         self.action_export = QAction("&Export Report…", self)
         self.action_export.setShortcut("Ctrl+E")
         self.action_export.triggered.connect(self.export_report)
         self.action_exit = QAction("E&xit", self)
         self.action_exit.triggered.connect(self.close)
         file_menu.addAction(self.action_open)
+        file_menu.addAction(self.action_open_demo)
         file_menu.addAction(self.action_export)
         file_menu.addSeparator()
         file_menu.addAction(self.action_exit)
@@ -210,11 +228,35 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.action_run.setShortcut("Ctrl+R")
         self.action_run.triggered.connect(self.run_analysis)
         analysis_menu.addAction(self.action_run)
+        analysis_menu.addSeparator()
+        self.action_batch = QAction("&Batch Folder Analysis…", self)
+        self.action_batch.setToolTip(
+            "Analyse every .iq/.wav in a folder and export a CSV + HTML summary"
+        )
+        self.action_batch.triggered.connect(self.run_batch_analysis)
+        analysis_menu.addAction(self.action_batch)
+        self.action_demo_all = QAction("Run Full &Demo (all sample captures)", self)
+        self.action_demo_all.setToolTip(
+            "Analyse every generated sample capture and print a one-screen summary"
+        )
+        self.action_demo_all.triggered.connect(self.run_demo_all)
+        analysis_menu.addAction(self.action_demo_all)
 
         export_menu = menubar.addMenu("&Export")
         self.action_export2 = QAction("Export &Report…", self)
         self.action_export2.triggered.connect(self.export_report)
         export_menu.addAction(self.action_export2)
+        self.action_export_csv = QAction("Batch Summary (&CSV)…", self)
+        self.action_export_csv.triggered.connect(
+            lambda: self.run_batch_analysis(fmt="csv")
+        )
+        self.action_export_html = QAction("Batch Summary (&HTML)…", self)
+        self.action_export_html.triggered.connect(
+            lambda: self.run_batch_analysis(fmt="html")
+        )
+        export_menu.addSeparator()
+        export_menu.addAction(self.action_export_csv)
+        export_menu.addAction(self.action_export_html)
 
         help_menu = menubar.addMenu("&Help")
         self.action_about = QAction("&About", self)
@@ -280,10 +322,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
         self.iq_format_combo = QComboBox()
         self.iq_format_combo.setObjectName("iq_format_combo")
-        self.iq_format_combo.addItems(["complex64", "int16", "uint8", "auto"])
+        self.iq_format_combo.addItems(["complex64", "int16", "uint8", "int8", "auto"])
         self.iq_format_combo.setCurrentText("complex64")
         self.iq_format_combo.setToolTip(
-            "Raw .iq sample format (ignored for .wav — rate comes from file)"
+            "Raw .iq sample format (ignored for .wav — rate comes from file). "
+            "'auto' infers the dtype from the byte statistics of the capture."
         )
         params_form.addRow("IQ format:", self.iq_format_combo)
 
@@ -301,6 +344,28 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.sync_word_edit.setPlaceholderText("0x1ACFFC1D")
         self.sync_word_edit.setToolTip("Known sync word in hex, e.g. 0x1ACFFC1D")
         params_form.addRow("Sync word:", self.sync_word_edit)
+
+        self.decode_check = QCheckBox("Verify FEC + decode payload")
+        self.decode_check.setObjectName("decode_check")
+        self.decode_check.setChecked(True)
+        self.decode_check.setToolTip(
+            "Search de-interleavers and FEC decoders and only report a payload "
+            "when a CRC-16 check passes. Uncheck for a faster run that reports "
+            "candidate scores only."
+        )
+        params_form.addRow("Decode:", self.decode_check)
+
+        self.frame_bits_spin = QSpinBox()
+        self.frame_bits_spin.setObjectName("frame_bits_spin")
+        self.frame_bits_spin.setRange(0, 10_000_000)
+        self.frame_bits_spin.setValue(0)
+        self.frame_bits_spin.setSpecialValueText("auto")
+        self.frame_bits_spin.setToolTip(
+            "Optional length of the coded region after the sync word. Leave at "
+            "'auto' for a capture that ends at the frame boundary; set it when "
+            "the recording continues past the end of the burst."
+        )
+        params_form.addRow("Frame bits:", self.frame_bits_spin)
         left_layout.addWidget(params_group)
 
         self.run_btn = QPushButton("Run Analysis")
@@ -391,6 +456,58 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.bitstream_tab = bitstream_tab
         self.tabs.addTab(bitstream_tab, "Bitstream")
 
+        # ---- Payload tab: header/payload identification ----
+        payload_tab = QWidget()
+        payload_layout = QVBoxLayout(payload_tab)
+        payload_layout.setContentsMargins(6, 6, 6, 6)
+        payload_layout.setSpacing(6)
+
+        self.payload_badge = QLabel("NO PAYLOAD YET")
+        self.payload_badge.setObjectName("payload_badge")
+        self.payload_badge.setProperty("verified", False)
+        self.payload_badge.setWordWrap(True)
+        payload_layout.addWidget(self.payload_badge)
+
+        self.payload_meta_label = QLabel(
+            "Open a capture and press Run Analysis to identify the header and payload."
+        )
+        self.payload_meta_label.setObjectName("payload_meta_label")
+        self.payload_meta_label.setWordWrap(True)
+        payload_layout.addWidget(self.payload_meta_label)
+
+        payload_split = QSplitter(Qt.Orientation.Vertical)
+
+        decoded_group = QGroupBox("Recovered message (CRC-16 verified only)")
+        decoded_layout = QVBoxLayout(decoded_group)
+        self.payload_decoded_text = QPlainTextEdit()
+        self.payload_decoded_text.setObjectName("payload_decoded_text")
+        self.payload_decoded_text.setReadOnly(True)
+        self.payload_decoded_text.setPlaceholderText(
+            "A message appears here only after an independent CRC-16 check "
+            "passes. Nothing is guessed."
+        )
+        self.payload_decoded_text.setMaximumBlockCount(400)
+        decoded_layout.addWidget(self.payload_decoded_text)
+        payload_split.addWidget(decoded_group)
+
+        raw_group = QGroupBox("Raw payload as received (still coded)")
+        raw_layout = QVBoxLayout(raw_group)
+        self.payload_raw_text = QPlainTextEdit()
+        self.payload_raw_text.setObjectName("payload_raw_text")
+        self.payload_raw_text.setReadOnly(True)
+        self.payload_raw_text.setPlaceholderText(
+            "Demodulated bits after the sync word, packed as bytes. For a coded "
+            "transmission this is the encoded stream, not the message."
+        )
+        self.payload_raw_text.setMaximumBlockCount(400)
+        raw_layout.addWidget(self.payload_raw_text)
+        payload_split.addWidget(raw_group)
+
+        payload_split.setSizes([260, 260])
+        payload_layout.addWidget(payload_split, stretch=1)
+        self.payload_tab = payload_tab
+        self.tabs.addTab(payload_tab, "Payload")
+
         # ---- Right results panel ----
         right = QWidget()
         right.setMinimumWidth(280)
@@ -456,6 +573,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.iq_format_combo.currentTextChanged.connect(self._on_params_changed)
             self.mod_combo.currentTextChanged.connect(self._on_params_changed)
             self.sync_word_edit.textChanged.connect(self._on_params_changed)
+            self.decode_check.toggled.connect(self._on_params_changed)
+            self.frame_bits_spin.valueChanged.connect(self._on_params_changed)
         except Exception:
             pass
 
@@ -496,6 +615,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def _build_request(self) -> dict:
         if self.current_file is None:
             raise ValueError("No file selected. Click Open File first.")
+        frame_bits = int(self.frame_bits_spin.value())
         return {
             "file_path": str(self.current_file),
             "sample_rate": float(self.sample_rate_spin.value()),
@@ -503,6 +623,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             "iq_format": self.iq_format_combo.currentText().strip(),
             "modulation": self._modulation_request_value(),
             "sync_word": self.sync_word_edit.text().strip(),
+            "decode": bool(self.decode_check.isChecked()),
+            "frame_bits": frame_bits if frame_bits > 0 else None,
         }
 
     def _current_ui_request(self) -> dict | None:
@@ -524,7 +646,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             name = str(req.get("file_path", "—"))
         return (
             f"{name}|rate={req.get('sample_rate')}|fmt={req.get('iq_format')}|"
-            f"mod={req.get('modulation')}|sync={req.get('sync_word')}"
+            f"mod={req.get('modulation')}|sync={req.get('sync_word')}|"
+            f"decode={req.get('decode')}|frame_bits={req.get('frame_bits')}"
         )
 
     def _update_last_analysis_label(self) -> None:
@@ -596,6 +719,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     "iq_format",
                     "modulation",
                     "sync_word",
+                    "decode",
+                    "frame_bits",
                 ):
                     if str(cur.get(k)) != str(self._last_request.get(k)):
                         diffs.append(
@@ -783,6 +908,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     f"mod={mod.get('estimated_type')} "
                     f"corr_offset={corr.get('header_offset')} score={corr.get('score')}"
                 )
+                self._log_payload_summary(report)
             self._update_results_table(report)
             self._update_plots(report)
         except Exception as exc:
@@ -938,15 +1064,21 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             corr = report.get("correlation", {})
             fec = report.get("fec", {})
             ilv = report.get("interleaving", {})
+            pay = report.get("payload", {}) or {}
+            dec = pay.get("decoded", {}) or {}
+            search = pay.get("decode_search", {}) or {}
             rows = [
                 ("File", str(inp.get("file_name", ""))),
                 ("File type", str(inp.get("file_type", ""))),
                 ("Sample rate", str(inp.get("sample_rate", ""))),
+                ("IQ format used", str(inp.get("iq_format_used", ""))),
                 ("Samples", str(sig.get("num_samples", ""))),
                 ("Duration (s)", str(sig.get("duration_seconds", ""))),
                 ("Center freq est", str(sig.get("center_frequency_estimate", ""))),
                 ("Bandwidth est", str(sig.get("bandwidth_estimate", ""))),
                 ("SNR (dB)", str(sig.get("snr_db", ""))),
+                ("Symbol rate est", str(sig.get("symbol_rate_estimate", ""))),
+                ("CFO est (Hz)", str(sig.get("cfo_estimate_hz", ""))),
                 ("Modulation", str(mod.get("estimated_type", ""))),
                 ("Mod confidence", str(mod.get("confidence", ""))),
                 ("Demod mode", str(dem.get("mode", ""))),
@@ -954,9 +1086,29 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 ("Sync word", str(corr.get("sync_word", ""))),
                 ("Header offset", str(corr.get("header_offset", ""))),
                 ("Corr score", str(corr.get("score", ""))),
+                ("Payload bits", str(pay.get("payload_bits", ""))),
+                (
+                    "Payload bytes (raw)",
+                    str((pay.get("raw", {}) or {}).get("bytes", "")),
+                ),
+                (
+                    "Decode search",
+                    f"{search.get('attempts', 0)} tried"
+                    + (" (budget hit)" if search.get("budget_exhausted") else ""),
+                ),
                 ("FEC candidate", str(fec.get("candidate", ""))),
                 ("FEC confidence", str(fec.get("confidence", ""))),
+                ("FEC verified", "yes" if fec.get("validated") else "no"),
                 ("Interleaver", str(ilv.get("candidate", ""))),
+                ("Interleaver verified", "yes" if ilv.get("validated") else "no"),
+                (
+                    "Recovered message",
+                    (
+                        f"{dec.get('bytes', 0)} bytes (CRC-16 verified)"
+                        if dec.get("available")
+                        else "none"
+                    ),
+                ),
                 ("Warnings", "; ".join(map(str, report.get("warnings", []) or []))),
                 ("Errors", "; ".join(map(str, report.get("errors", []) or []))),
             ]
@@ -968,7 +1120,288 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.results_table.setItem(i, 1, QTableWidgetItem(v))
         self.results_table.resizeColumnsToContents()
 
+    # ------------------------------------------------------------------ #
+    # Demo / batch helpers
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _sample_data_dir() -> Path:
+        """Locate sample_data/ relative to the repo root (src/../..)."""
+        return Path(__file__).resolve().parents[3] / "sample_data"
+
+    def _demo_captures(self) -> list[Path]:
+        try:
+            from rf_analyzer.batch import discover_captures
+
+            folder = self._sample_data_dir()
+            if folder.is_dir():
+                return discover_captures(folder)
+        except Exception:
+            pass
+        return []
+
+    def open_demo_capture(self, name: str | None = None) -> None:
+        """Load one of the generated sample captures (no dialog when ``name`` given)."""
+        captures = self._demo_captures()
+        if not captures:
+            msg = (
+                "No sample captures found. Generate them first with "
+                "python scripts/generate_test_data.py"
+            )
+            self.log(f"ERROR: {msg}")
+            _notify(self, "warning", "No demo captures", msg)
+            return
+        if name is None:
+            labels = [p.name for p in captures]
+            choice, ok = QInputDialog.getItem(
+                self, "Open demo capture", "Capture:", labels, 0, False
+            )
+            if not ok or not choice:
+                return
+            name = str(choice)
+        target = next((p for p in captures if p.name == name), None)
+        if target is None:
+            self.log(f"ERROR: demo capture '{name}' not found.")
+            return
+        self.log(f"Loading demo capture: {target.name}")
+        self.open_file(str(target))
+        try:
+            self.run_analysis()
+        except Exception as exc:
+            self.log(f"WARN: demo analysis failed: {exc}")
+
+    def run_batch_analysis(
+        self,
+        folder: str | None = None,
+        fmt: str | None = None,
+        *,
+        export: bool = True,
+    ) -> list[dict]:
+        """Analyse every capture in a folder and optionally export CSV + HTML.
+
+        With no ``folder`` a directory picker is shown; passing ``folder`` keeps
+        this callable from tests and scripts without any dialog.
+        """
+        from rf_analyzer.batch import analyze_folder, write_csv, write_html
+
+        if folder is None:
+            folder = QFileDialog.getExistingDirectory(
+                self, "Choose a folder of .iq / .wav captures"
+            )
+            if not folder:
+                return []
+        try:
+            rows = analyze_folder(
+                folder,
+                sample_rate=float(self.sample_rate_spin.value()),
+                iq_format=self.iq_format_combo.currentText().strip(),
+                modulation=self._modulation_request_value(),
+                sync_word=self.sync_word_edit.text().strip(),
+                decode=bool(self.decode_check.isChecked()),
+                progress=lambda path, i, total: self.log(f"[{i}/{total}] {path.name}"),
+            )
+        except Exception as exc:
+            self.log(f"ERROR: batch analysis failed: {exc}\n{traceback.format_exc()}")
+            _notify(self, "critical", "Batch failed", str(exc))
+            return []
+
+        if not rows:
+            self.log("Batch: no .iq/.wav captures found in that folder.")
+            return []
+
+        verified = sum(1 for r in rows if r.get("decode_validated") == "yes")
+        self.log(
+            f"Batch done: {len(rows)} capture(s), {verified} CRC-verified payload(s)."
+        )
+        for row in rows:
+            if row.get("decode_validated") == "yes":
+                self.log(
+                    f"  {row['file']}: {row.get('fec_candidate')} / "
+                    f"{row.get('interleaver')} -> {row.get('decoded_text', '')[:80]!r}"
+                )
+
+        if export:
+            out_dir = Path("output")
+            wanted = {fmt} if fmt in ("csv", "html") else {"csv", "html"}
+            try:
+                if "csv" in wanted:
+                    path = write_csv(rows, out_dir / "batch_summary.csv")
+                    self.log(f"Batch CSV written to {path}")
+                if "html" in wanted:
+                    path = write_html(
+                        rows,
+                        out_dir / "batch_summary.html",
+                        subtitle=f"Folder: {Path(folder)}",
+                    )
+                    self.log(f"Batch HTML written to {path}")
+            except Exception as exc:
+                self.log(f"WARN: batch export failed: {exc}")
+        return rows
+
+    def run_demo_all(self, folder: str | None = None) -> list[dict]:
+        """Analyse every generated sample capture and log a one-screen summary."""
+        target = folder or str(self._sample_data_dir())
+        self.log(f"Full demo: analysing every capture in {target} …")
+        return self.run_batch_analysis(target, export=True)
+
+    def _log_payload_summary(self, report: dict) -> None:
+        """One honest log line about header/payload identification."""
+        try:
+            pay = (report or {}).get("payload", {}) or {}
+            if not pay:
+                return
+            decoded = pay.get("decoded", {}) or {}
+            search = pay.get("decode_search", {}) or {}
+            if decoded.get("available"):
+                self.log(
+                    f"Payload: CRC-16 VERIFIED — {decoded.get('bytes')} bytes via "
+                    f"{decoded.get('scheme')} / {decoded.get('interleaver')} "
+                    f"interleaver ({search.get('attempts', 0)} hypotheses tried)."
+                )
+                preview = str(decoded.get("text", ""))
+                if preview:
+                    self.log(f"  message: {preview[:160]}")
+            else:
+                self.log(
+                    "Payload: NOT DECODED — no CRC-valid FEC hypothesis "
+                    f"({search.get('attempts', 0)} tried"
+                    + (
+                        ", time budget reached"
+                        if search.get("budget_exhausted")
+                        else ""
+                    )
+                    + "). Raw payload view shows the still-coded stream."
+                )
+        except Exception as exc:
+            self.log(f"WARN: could not summarise payload: {exc}")
+
+    def _set_payload_badge(self, text: str, verified: bool) -> None:
+        """Set the payload status badge and re-polish so the QSS property applies."""
+        try:
+            self.payload_badge.setText(text)
+            self.payload_badge.setProperty("verified", bool(verified))
+            style = self.payload_badge.style()
+            style.unpolish(self.payload_badge)
+            style.polish(self.payload_badge)
+        except Exception:
+            pass
+
+    def _update_payload_tab(self, report: dict) -> None:
+        """Render header/payload identification.
+
+        The badge is the honest headline: it reads VERIFIED only when a real
+        decoder produced a CRC-valid payload. Otherwise it says so plainly and
+        the raw view is labelled as still-coded.
+        """
+        report = report or {}
+        pay = report.get("payload", {}) or {}
+        search = pay.get("decode_search", {}) or {}
+        decoded = pay.get("decoded", {}) or {}
+        raw = pay.get("raw", {}) or {}
+
+        # A failed analysis explains itself first: an error report carries an
+        # empty payload block, so "no payload block" would tell the wrong story.
+        errors = report.get("errors") or []
+        if errors:
+            self._set_payload_badge(f"NOT ANALYSED — {errors[0]}", False)
+            self.payload_meta_label.setText("")
+            self.payload_decoded_text.setPlainText("")
+            self.payload_raw_text.setPlainText("")
+            return
+
+        if not pay:
+            self._set_payload_badge(
+                "NO PAYLOAD — analysis returned no payload block", False
+            )
+            self.payload_meta_label.setText(
+                "The report has no payload section (the file may have failed to load)."
+            )
+            self.payload_decoded_text.setPlainText("")
+            self.payload_raw_text.setPlainText("")
+            return
+
+        corr = report.get("correlation", {}) or {}
+        header_offset = pay.get("header_offset", 0)
+        if corr.get("sync_word") and corr.get("detected"):
+            header_note = (
+                f"sync {corr.get('sync_word')} found at bit {corr.get('header_offset')} "
+                f"(score {float(corr.get('score', 0.0)):.3f})"
+            )
+        elif corr.get("sync_word"):
+            header_note = (
+                f"sync {corr.get('sync_word')} not found "
+                f"(best score {float(corr.get('score', 0.0)):.3f}); "
+                "whole stream treated as payload"
+            )
+        else:
+            header_note = "no sync word supplied; whole stream treated as payload"
+
+        attempts = search.get("attempts", 0)
+        if not search.get("enabled", True):
+            search_note = "decode search off"
+        elif search.get("validated"):
+            search_note = f"decode search: {attempts} hypotheses, validated"
+        elif search.get("budget_exhausted"):
+            search_note = f"decode search: {attempts} hypotheses, time budget reached"
+        else:
+            search_note = f"decode search: {attempts} hypotheses, no CRC match"
+
+        self.payload_meta_label.setText(
+            f"Header: {header_note}\n"
+            f"Payload: {pay.get('payload_bits', 0)} bits from bit {header_offset} "
+            f"({raw.get('bytes', 0)} bytes packed) · {search_note}"
+        )
+
+        if decoded.get("available"):
+            self._set_payload_badge(
+                f"CRC-16 VERIFIED — {decoded.get('scheme')} "
+                f"via {decoded.get('interleaver')} interleaver · "
+                f"{decoded.get('bytes')} bytes recovered",
+                True,
+            )
+            body = [
+                f"scheme        : {decoded.get('scheme')}",
+                f"interleaver   : {decoded.get('interleaver')}",
+                f"errors fixed  : {decoded.get('errors_corrected', 0)}",
+                f"confidence    : {decoded.get('confidence')}",
+                f"content type  : {decoded.get('content_type')}",
+                "",
+                "text:",
+                str(decoded.get("text", "")),
+                "",
+                "hex:",
+                str(decoded.get("hex", "")),
+                "",
+                "hexdump:",
+                *[str(line) for line in (decoded.get("hexdump") or [])],
+            ]
+            self.payload_decoded_text.setPlainText("\n".join(body))
+        else:
+            self._set_payload_badge(
+                "NOT DECODED — payload shown exactly as received, still coded",
+                False,
+            )
+            note = decoded.get("note", "no CRC-valid decode")
+            self.payload_decoded_text.setPlainText(
+                "No CRC-16-valid decode was found, so no message is claimed.\n\n"
+                f"reason: {note}\n\n"
+                "The raw view below is the demodulated bit stream packed as "
+                "bytes. For a coded transmission it is the encoded stream, not "
+                "the transmitted text."
+            )
+
+        raw_body = [
+            f"content type  : {raw.get('content_type')}",
+            f"bytes         : {raw.get('bytes')}",
+            "",
+            "hexdump:",
+            *[str(line) for line in (raw.get("hexdump") or [])],
+        ]
+        self.payload_raw_text.setPlainText("\n".join(raw_body))
+
     def _update_plots(self, report: dict) -> None:
+        # The payload view is derived purely from the report, so refresh it
+        # first — it must still populate when samples are unavailable.
+        self._update_payload_tab(report)
         samples, rate = self._load_display_samples()
         if samples is None or len(samples) == 0:
             self.log("WARN: no samples available for plots; showing report only.")

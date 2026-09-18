@@ -33,6 +33,13 @@ CASES = [
 
 MESSAGE = b"SIH26147 end-to-end verification payload: FEC plus de-interleaving."
 
+#: Correctness tests must not be decided by the wall-clock guard. On a loaded
+#: machine the default 4 s budget can expire before the search reaches the
+#: winning hypothesis, which would turn a passing decode into a flaky failure.
+#: These tests assert *correctness*, so they buy themselves room; the default
+#: budget itself is asserted in test_default_budget_is_reported below.
+GENEROUS_BUDGET = {"decode_time_budget_s": 120.0, "decode_max_bits": 200_000}
+
 
 def _write_capture(path, fec, interleaver, modulation, n_errors, seed=99):
     """Build a frame, inject channel errors, modulate and save as raw IQ."""
@@ -63,6 +70,7 @@ def test_coded_capture_is_decoded_and_crc_verified(
             "sample_rate": SAMPLE_RATE,
             "sync_word": SYNC_WORD,
             "modulation": "auto",
+            **GENEROUS_BUDGET,
         }
     )
 
@@ -108,6 +116,7 @@ def test_raw_payload_is_labelled_as_still_coded(
             "sample_rate": SAMPLE_RATE,
             "sync_word": SYNC_WORD,
             "modulation": "auto",
+            **GENEROUS_BUDGET,
         }
     )
 
@@ -174,7 +183,12 @@ def test_frame_bits_hint_handles_trailing_samples(tmp_path):
     }
 
     report = analyze_file(
-        {**base, "file_path": str(path), "frame_bits": frame["frame_bits"]}
+        {
+            **base,
+            "file_path": str(path),
+            "frame_bits": frame["frame_bits"],
+            **GENEROUS_BUDGET,
+        }
     )
     assert report["payload"]["decoded"]["available"] is True
     assert bytes.fromhex(report["payload"]["decoded"]["hex"]) == MESSAGE
@@ -208,3 +222,73 @@ def test_report_keeps_every_required_schema_key(tmp_path):
     ):
         assert key in report, f"missing §13 key: {key}"
     assert "payload" in report
+
+
+def test_default_search_budget_is_reported(tmp_path):
+    """The override must not hide the default: an ordinary request reports it.
+
+    This keeps the §NFR-03 guard visible in every report instead of only in the
+    tests that deliberately raise it.
+    """
+    from rf_analyzer.config import DECODE_MAX_BITS, DECODE_TIME_BUDGET_S
+
+    path = tmp_path / "budget.iq"
+    _write_capture(path, "rs", "block", "BPSK", 0)
+
+    report = analyze_file(
+        {
+            "file_path": str(path),
+            "sample_rate": SAMPLE_RATE,
+            "sync_word": SYNC_WORD,
+            "modulation": "BPSK",
+        }
+    )
+
+    search = report["payload"]["decode_search"]
+    assert search["max_bits"] == DECODE_MAX_BITS
+    assert search["time_budget_s"] == DECODE_TIME_BUDGET_S
+
+
+def test_search_budget_is_overridable_per_request(tmp_path):
+    """A caller who knows the frame is long can raise the limits."""
+    path = tmp_path / "override.iq"
+    _write_capture(path, "rs", "block", "BPSK", 0)
+
+    report = analyze_file(
+        {
+            "file_path": str(path),
+            "sample_rate": SAMPLE_RATE,
+            "sync_word": SYNC_WORD,
+            "modulation": "BPSK",
+            "decode_max_bits": 4096,
+            "decode_time_budget_s": 0.5,
+        }
+    )
+
+    search = report["payload"]["decode_search"]
+    assert search["max_bits"] == 4096
+    assert search["time_budget_s"] == 0.5
+
+
+def test_bad_budget_values_fall_back_to_defaults(tmp_path):
+    """Garbage in the request must not crash the analysis."""
+    from rf_analyzer.config import DECODE_MAX_BITS, DECODE_TIME_BUDGET_S
+
+    path = tmp_path / "badbudget.iq"
+    _write_capture(path, "rs", "block", "BPSK", 0)
+
+    report = analyze_file(
+        {
+            "file_path": str(path),
+            "sample_rate": SAMPLE_RATE,
+            "sync_word": SYNC_WORD,
+            "modulation": "BPSK",
+            "decode_max_bits": "not-a-number",
+            "decode_time_budget_s": None,
+        }
+    )
+
+    assert report["errors"] == []
+    search = report["payload"]["decode_search"]
+    assert search["max_bits"] == DECODE_MAX_BITS
+    assert search["time_budget_s"] == DECODE_TIME_BUDGET_S
