@@ -229,6 +229,41 @@ def check_2fsk_symbol_recovery(checks: Checks) -> None:
         f"noise={estimate_fsk_symbol_period(noise)}",
     )
 
+    # The classifier's FSK test is a narrowband test, not an FSK test: it also
+    # fires for an unmodulated tone and for audio. The period recovery is the
+    # independent evidence, so an uncorroborated 2-FSK label must lose its
+    # confidence instead of being reported as a confident estimate.
+    from rf_analyzer.config import MODULATION_UNCORROBORATED_CONFIDENCE
+
+    tone_path = ROOT / "sample_data" / "tone.iq"
+    if tone_path.exists():
+        tone_report = analyze_file(
+            {
+                "file_path": str(tone_path),
+                "sample_rate": 100_000,
+                "iq_format": "complex64",
+                "modulation": "auto",
+                "sync_word": "0x1ACFFC1D",
+            }
+        )
+        tone_mod = tone_report.get("modulation", {})
+        checks.check(
+            "uncorroborated 2-FSK keeps its label but loses its confidence",
+            tone_mod.get("estimated_type") == "2-FSK"
+            and tone_mod.get("corroborated") is False
+            and float(tone_mod.get("confidence", 1.0))
+            <= MODULATION_UNCORROBORATED_CONFIDENCE
+            and any("uncorroborated" in w for w in tone_report.get("warnings", [])),
+            f"type={tone_mod.get('estimated_type')} "
+            f"conf={tone_mod.get('confidence')} "
+            f"corroborated={tone_mod.get('corroborated')}",
+        )
+    checks.check(
+        "genuine 2-FSK classification is corroborated",
+        report.get("modulation", {}).get("corroborated") is True,
+        f"corroborated={report.get('modulation', {}).get('corroborated')}",
+    )
+
 
 def check_payload_honesty(checks: Checks) -> None:
     """Random bits must never be reported as a decoded message."""
@@ -615,10 +650,10 @@ def check_real_captures(checks: Checks) -> None:
 def main() -> int:
     print("=== RF Analyzer MVP Verification ===")
 
-    print("[1/4] Generating synthetic data...")
+    print("[1/5] Generating synthetic data...")
     run_command([sys.executable, "scripts/generate_test_data.py"])
 
-    print("[2/4] Running pytest...")
+    print("[2/5] Running pytest...")
     run_command([sys.executable, "-m", "pytest", "-q"])
 
     print("[3/5] Running MVP pipeline checks...")
