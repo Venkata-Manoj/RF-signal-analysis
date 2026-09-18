@@ -188,6 +188,13 @@ The names below are jargon, but the ideas are simple.
 dump. If it does not, you get the raw bits **clearly labelled as still-coded**, never as
 a message.
 
+**The `(uncorroborated)` marker** — sometimes the tool guesses the modulation is 2-FSK
+but cannot independently confirm it. When that happens it keeps the label, but writes
+`(uncorroborated)` beside the confidence so the number is not mistaken for a normal
+estimate. Read it as "we are not sure about this one". This mostly happens on signals
+that carry no data at all, such as an unmodulated tone or a piece of audio — see
+[Known limitations](#known-limitations).
+
 ---
 
 ## What "verified" means (and what it does not)
@@ -317,7 +324,7 @@ if you want more material for a live demo.
 python scripts/verify_mvp.py
 ```
 
-This regenerates the test data, runs the whole test suite, and then performs **55
+This regenerates the test data, runs the whole test suite, and then performs **57
 individual checks** end to end. It prints `PASS` and exits `0` only if every one
 succeeds. It covers, among others:
 
@@ -336,7 +343,7 @@ succeeds. It covers, among others:
 Other useful commands:
 
 ```powershell
-pytest                                        # the full suite (390 tests)
+pytest                                        # the full suite (391 tests)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
 $env:QT_QPA_PLATFORM="offscreen"; pytest tests/integration -q   # GUI tests, headless
@@ -456,11 +463,13 @@ We would rather list these than have you discover them:
 - **A signal with no data on it is still given a label.** Measured on the bundled
   samples, the FSK test (low instantaneous-frequency variance) fires for an unmodulated
   tone, for narrowband audio and for speech, as well as for genuine 2-FSK. Those cases
-  are *not* silently accepted, though: the tool tries to recover a symbol period, fails,
-  and says so ("could not recover the 2-FSK symbol period … or not constant-envelope
-  FSK"), and it never claims a payload from them. Telling "unmodulated carrier" apart
-  from "data signal" properly needs its own class, which is a scoped follow-up rather
-  than something to bolt onto the existing heuristic.
+  are not accepted quietly: the tool tries to recover a symbol period, fails, and both
+  warns and **caps the reported confidence**, so the label is shown as uncorroborated
+  instead of as a confident estimate. It never claims a payload from them. Telling
+  "unmodulated carrier" apart from "data signal" properly needs its own class, which is
+  a scoped follow-up rather than something to bolt onto the existing heuristic — and
+  swapping in a different discriminator without validating it would just replace one
+  wrong label with another.
 - **Blind FEC detection is a search, not a detector.** Nothing is reported as decoded
   without a CRC-16 pass, so an unusual or unlisted scheme will simply not be found.
 - **An uncoded frame corrects nothing, by design.** With no FEC, a single flipped bit

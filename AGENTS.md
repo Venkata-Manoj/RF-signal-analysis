@@ -1,7 +1,7 @@
 # AGENTS.md — RF Signal Analysis Workbench MVP
 
 ## Status / source of truth
-- Repo is feature-complete for the MVP brief: **390 pytest tests passing (1 skipped)**, `python scripts/verify_mvp.py → PASS` (55 individual checks), ruff/black clean. Implements 16-QAM demod, sampling-rate estimation, 2-FSK symbol-period recovery, real FEC codecs + verified decoding, real interleavers, payload extraction, batch analysis, a PyQt6 GUI and a zero-install web dashboard.
+- Repo is feature-complete for the MVP brief: **391 pytest tests passing (1 skipped)**, `python scripts/verify_mvp.py → PASS` (57 individual checks), ruff/black clean. Implements 16-QAM demod, sampling-rate estimation, 2-FSK symbol-period recovery, real FEC codecs + verified decoding, real interleavers, payload extraction, batch analysis, a PyQt6 GUI and a zero-install web dashboard.
 - `README.md` is the user-facing document (written for a non-technical reader) — keep it accurate when behaviour changes.
 - `info.md` is authoritative for scope, schemas, and starter code. Implemented `info.md` §9–§12 gap-closure per `docs/superpowers/plans/2026-09-15-sih26147-gap-closure.md`.
 - Actual layout: `src/rf_analyzer/{config,pipeline,batch,dashboard}.py`, `core/{io,dsp,classifier,demod,correlator,fec,deinterleave,framing,payload,report}.py`, `gui/main_window.py`, `web/dashboard.html`; `scripts/{generate_test_data,run_app,run_pipeline,serve_dashboard,batch_analyze,fetch_real_data,verify_mvp,benchmark_snr}.py`; `tests/{unit,integration}`; `sample_data/`, `real_data/`, `output/`.
@@ -19,7 +19,7 @@
   1. Real codecs (from scratch, pure numpy): `crc16_ccitt`/`crc32_ieee`, K=7 r=1/2 `conv_encode`+hard-decision `viterbi_decode` (G1=0o171, G2=0o133), GF(256) + `rs_encode`/`rs_decode` (RS(255,223) and shortened), `(3,4)`-regular systematic `ldpc_encode`/`ldpc_decode` (min-sum BP, `H=[A|I]`, `p = A@u mod 2`), `concatenated_encode`/`concatenated_decode` (CRC-16 → RS outer → conv inner).
   2. `score_fec_candidates` = blind heuristic, confidence capped at 0.5, `crc_pass=None`. `decode_hypotheses(bits, start_offset=...)` performs the real decodes and only reports >0.9 confidence when a CRC-16 actually passes. Never raise `fec.confidence` above 0.5 — verified decoding goes in the separate `fec.decoded` field.
 - `rs_encode` returns **parity symbols only**; build systematic codewords as `msg + rs_encode(msg, nsym)`. The CRC-16 sits *inside* the RS message (payload+CRC+parity), so strip the trailing `nsym` bytes before `crc16_check`.
-- Report schema is §13 **plus additive blocks** that must not replace it: `payload` (raw rendering + CRC-verified decode), `display`, `quality` (EVM/MER/`fit_ok`). `REQUIRED_REPORT_KEYS` deliberately mirrors §13 only. Error and success reports must expose the **same** top-level shape.
+- Report schema is §13 **plus additive blocks** that must not replace it: `payload` (raw rendering + CRC-verified decode), `display`, `quality` (EVM/MER/`fit_ok`), plus one additive *nested* key `modulation.corroborated` (`True`/`False`/`None`). `REQUIRED_REPORT_KEYS` deliberately mirrors §13 only. Error and success reports must expose the **same** top-level shape.
 
 ## Honesty contracts (do not weaken these)
 - **Never claim a decode without a CRC pass.** Blind `score_fec_candidates`/`score_deinterleave_candidates` stay capped at 0.5 with `crc_pass=None`; only `decode_hypotheses`/`search_interleaver` may set `validated=True`, and only on a real CRC-16 pass. Tests and `verify_mvp.py` enforce this — a noise capture must produce no decode.
@@ -28,6 +28,7 @@
 - **EVM is not comparable across constellation sizes.** A denser constellation fits any point cloud better (measured on a real GPS capture: 93.5% BPSK → 26.2% 64-QAM). Use EVM only to judge the *chosen* constellation's fit (`fit_ok`); never to rank modulations.
 - **`bandwidth_estimate == 0.0` means "not measurable", not zero.** `estimate_bandwidth` needs ≥2 bins above the noise floor; the pipeline warns when it fails and the derived sample-rate estimate is 0 too. Do not "fix" this by lowering the threshold — for flat-spectrum signals (QPSK) noise is *peakier* than the signal.
 - **2-FSK symbol-period recovery never invents a period.** `dsp.estimate_fsk_symbol_period` returns `1` ("no resolvable structure, use the naive path") for BPSK/QPSK/noise/tone, for periods below `FSK_MIN_SYMBOL_PERIOD`, and whenever the piecewise-constant reconstruction residual exceeds `FSK_MAX_RECONSTRUCTION_RESIDUAL`. It searches a window around an autocorrelation-derived centre (a fixed window misses at large periods — the centre is only good to a few percent) and breaks divisor ties by taking the largest near-optimal candidate. The pipeline then derives `symbol_rate_estimate` from the period, overriding the |x|² estimate, which is meaningless for constant-envelope FSK (it reported 395 kHz for a 1 kHz burst). `scripts/generate_test_data.py` and `framing.modulate_2fsk` share one waveform definition (info.md §15.1 phase convention) — do not reintroduce a second copy.
+- **An uncorroborated 2-FSK label keeps its label but loses its confidence.** The classifier's FSK gate is a *narrowband* test, not an FSK test: measured on the bundled samples it also fires for an unmodulated tone (instantaneous-frequency variance 1e-16), narrowband audio (0.18) and speech (0.79), against 0.097 for a genuine 2-FSK burst. Period recovery is the independent evidence, so `modulation.corroborated` records `True`/`False`/`None` and, when the label is an *estimate* (`requested == "AUTO"`) and no period could be recovered, `modulation.confidence` is capped to `MODULATION_UNCORROBORATED_CONFIDENCE` (0.35) with a warning. An **explicit** user request for `2-FSK` is left alone — report what was found, do not downgrade the user's own choice. Do not swap in a different discriminator without validating it: median-split separation and the bimodality coefficient were both tried and are numerically degenerate here (a tone's instantaneous frequency is constant to ~1e-8), so they would only replace one wrong label with another.
 
 ## Commands (Windows PowerShell host — no `make`, no `source`, no `head`)
 ```powershell
@@ -37,7 +38,7 @@ python scripts/generate_test_data.py   # required before integration tests; seed
 pytest                                  # all
 pytest tests/unit/test_io.py -q         # single file/module pattern
 $env:QT_QPA_PLATFORM="offscreen"; pytest tests/integration -q  # GUI smoke test needs this
-python scripts/verify_mvp.py            # must print PASS (§23); 55 checks
+python scripts/verify_mvp.py            # must print PASS (§23); 57 checks
 python scripts/run_app.py               # GUI; headless check: scripts/run_pipeline.py
 python scripts/serve_dashboard.py --open  # zero-install web dashboard (127.0.0.1:8765)
 python scripts/run_pipeline.py sample_data/bpsk.iq --sample-rate 100000 --iq-format auto
