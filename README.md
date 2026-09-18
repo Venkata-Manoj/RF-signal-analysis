@@ -352,7 +352,7 @@ succeeds. It covers, among others:
 Other useful commands:
 
 ```powershell
-pytest                                        # the full suite (421 tests)
+pytest                                        # the full suite (426 tests)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
 python scripts/measure_fec_capability.py      # re-derive the FEC tolerance numbers below
@@ -470,6 +470,15 @@ We would rather list these than have you discover them:
   the GPS L1 capture is classified as 16-QAM. The tool flags the poor fit rather than
   hiding it. EVM is *not* used to pick a modulation, because it always favours denser
   constellations.
+- **The modulation label is not invariant to how much noise surrounds the burst.** The
+  same BPSK burst is labelled QPSK or 8PSK once enough noise is added either side of it,
+  at 0.7–0.85 confidence and with no warning that the label is unreliable. Real captures
+  *are* bursts in noise, so this is the limitation most likely to bite in practice: when
+  the label is wrong the header usually fails to correlate, and the report then says
+  "no frame found", which points at the wrong problem. Unlike the 2-FSK case there is no
+  cheap independent corroboration to lean on here — EVM cannot separate these, because a
+  sparser constellation always fits a denser one's points. Pinned by
+  `tests/integration/test_burst_in_noise.py`.
 - **A signal with no data on it is still given a label.** Measured on the bundled
   samples, the FSK test (low instantaneous-frequency variance) fires for an unmodulated
   tone, for narrowband audio and for speech, as well as for genuine 2-FSK. Those cases
@@ -487,6 +496,14 @@ We would rather list these than have you discover them:
   control that makes the error-correction claims meaningful.
 - **The decode search examines a bounded prefix** (16,384 bits, 4 s by default) to respect
   the performance budget. Raise `decode_max_bits` / `decode_time_budget_s` for long frames.
+- **A decode is only found when the capture ends at the frame boundary.** The decoder
+  assumes a single-burst capture, so a frame followed by noise — or by any trailing
+  samples — will not decode even when the modulation is correct and the sync word is
+  found at the right offset with a perfect score. The receiver has no way to know the
+  burst length from the signal alone; estimating it is a V2 item. Workaround: cap
+  `decode_max_bits` to just past the frame, which is what makes this a missing frame-length
+  estimate rather than a decoding fault. Pinned by
+  `tests/integration/test_burst_in_noise.py`.
 - **No GNU Radio and no RF hardware.** Everything runs on files.
 
 ---
