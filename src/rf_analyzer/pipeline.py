@@ -27,6 +27,9 @@ from rf_analyzer.config import (
     DECODE_MAX_BITS,
     DECODE_TIME_BUDGET_S,
     DEFAULT_SYNC_WORD,
+    MODULATION_FIT_CANDIDATES,
+    MODULATION_FIT_EVM_WARN,
+    MODULATION_FIT_MAX_SAMPLES,
     PAYLOAD_PREVIEW_BYTES,
     TOOL_NAME,
     VERSION,
@@ -273,16 +276,26 @@ def analyze_file(request: dict) -> dict:
 
         sync_word = request.get("sync_word")
         assumed_sync_word: str | None = None
+        probe_info: dict | None = None
         if not sync_word:
             # No sync word was supplied. Rather than silently starting the
             # payload at bit 0 -- which mis-frames every capture that *does*
             # carry a header, and makes the decode search miss -- probe with
-            # the project default and, only if it correlates above threshold,
-            # use it as a framing hint. The probe is recorded as an
-            # assumption in the report; it is never presented as a value the
-            # caller supplied. A 32-bit match at >=0.85 does not occur by
-            # chance, so random noise still yields no header.
+            # the project default and, only if it correlates *significantly*,
+            # use it as a framing hint. The probe is recorded as an assumption
+            # in the report; it is never presented as a value the caller
+            # supplied. `detected` already accounts for the search length, so
+            # a long capture cannot produce a chance match (see
+            # correlator.FALSE_ALARM_TARGET).
             probe = find_header(np.asarray(bits), hex_to_bits(DEFAULT_SYNC_WORD))
+            probe_info = {
+                "sync_word": DEFAULT_SYNC_WORD,
+                "score": float(probe.get("score", 0.0)),
+                "offset": int(probe.get("offset", -1)),
+                "min_score": float(probe.get("min_score", 0.0)),
+                "positions_searched": int(probe.get("positions_searched", 0)),
+                "accepted": bool(probe.get("detected", False)),
+            }
             if bool(probe.get("detected", False)) and int(probe.get("offset", -1)) >= 0:
                 sync_word = DEFAULT_SYNC_WORD
                 assumed_sync_word = DEFAULT_SYNC_WORD
@@ -292,6 +305,20 @@ def analyze_file(request: dict) -> dict:
                     f"{float(probe.get('score', 0.0)):.2f} at bit "
                     f"{int(probe.get('offset', 0))}). Pass sync_word explicitly "
                     "if the capture uses a different header."
+                )
+            elif probe_info["score"] > 0.0:
+                # A match was seen but is not significant for a capture this
+                # long. Say so, rather than reporting a bare "no header" and
+                # leaving the user to wonder whether the tool even looked.
+                warnings.append(
+                    f"No sync_word was supplied and the default "
+                    f"{DEFAULT_SYNC_WORD} did not match significantly "
+                    f"(best score {probe_info['score']:.3f} at bit "
+                    f"{probe_info['offset']}, below the "
+                    f"{probe_info['min_score']:.3f} required over "
+                    f"{probe_info['positions_searched']} searched positions). "
+                    "Treating the whole bit stream as payload; pass sync_word "
+                    "explicitly if the capture really does carry a header."
                 )
 
         if sync_word:
@@ -308,6 +335,12 @@ def analyze_file(request: dict) -> dict:
                 "score": score,
                 "detected": detected,
                 "sync_length": int(sync_bits.size),
+                # Statistical-significance context: a fixed score threshold is
+                # weaker evidence on a long capture than a short one.
+                "min_score": float(found.get("min_score", 0.0)),
+                "min_matches": int(found.get("min_matches", 0)),
+                "positions_searched": int(found.get("positions_searched", 0)),
+                "probe": probe_info,
             }
         else:
             sync_bits = None
@@ -319,6 +352,10 @@ def analyze_file(request: dict) -> dict:
                 "score": 0.0,
                 "detected": False,
                 "sync_length": 0,
+                "min_score": 0.0,
+                "min_matches": 0,
+                "positions_searched": 0,
+                "probe": probe_info,
             }
 
         # The payload starts right after a *detected* sync word; with no header
@@ -390,8 +427,10 @@ def analyze_file(request: dict) -> dict:
         }
         if decode_enabled and not validated:
             warnings.append(
-                "No CRC-valid FEC/interleaver hypothesis matched. The payload "
-                "shown is the raw coded bit stream, not a decoded message."
+                "No CRC-valid FEC/interleaver hypothesis matched. This is "
+                "expected for a capture that carries no CRC-framed payload "
+                "(e.g. an analog or unframed real-world recording); the bytes "
+                "shown are the raw demodulated bit stream, not a decoded message."
             )
 
         if validated and best:
@@ -451,6 +490,67 @@ def analyze_file(request: dict) -> dict:
                 "n_symbols": 0,
                 "error": str(exc),
             }
+
+        # ---- Cross-check the modulation guess against the constellation fit ----
+        # The classifier works on higher-order statistics alone; EVM is an
+        # independent test of how well the *chosen* constellation explains the
+        # samples. A poor fit means the guess does not describe the signal.
+        #
+        # EVM is deliberately NOT used to rank modulations against each other:
+        # a denser constellation can fit any point cloud better, so raw EVM
+        # falls monotonically with constellation size (on a real GPS L1
+        # capture: 93.5% at BPSK down to 26.2% at 64-QAM). The per-candidate
+        # numbers are reported as context only, and the warning says so.
+        evm_percent = quality_block.get("evm_percent")
+        if quality_block.get("applicable") and evm_percent is not None:
+            evm_value = float(evm_percent)
+            fit_ok = evm_value <= MODULATION_FIT_EVM_WARN
+            quality_block["fit_ok"] = fit_ok
+            if not fit_ok:
+                fit_samples = samples[:MODULATION_FIT_MAX_SAMPLES]
+                table: list[dict] = []
+                for candidate in MODULATION_FIT_CANDIDATES:
+                    if str(candidate).upper() == mode.upper():
+                        continue
+                    try:
+                        candidate_evm = compute_evm(
+                            fit_samples,
+                            mode=candidate,
+                            samples_per_symbol=samples_per_symbol,
+                        )
+                    except Exception:
+                        continue
+                    if candidate_evm.get("applicable") and (
+                        candidate_evm.get("evm_percent") is not None
+                    ):
+                        table.append(
+                            {
+                                "mode": str(candidate),
+                                "modulation_order": candidate_evm.get(
+                                    "modulation_order"
+                                ),
+                                "evm_percent": float(candidate_evm["evm_percent"]),
+                            }
+                        )
+                table.sort(key=lambda row: row["evm_percent"])
+                quality_block["candidates"] = table
+
+                context = ""
+                if table:
+                    context = (
+                        f" For context, EVM on this capture is "
+                        f"{table[-1]['evm_percent']:.1f}% for "
+                        f"{table[-1]['mode']} and {table[0]['evm_percent']:.1f}% "
+                        f"for {table[0]['mode']}; a denser constellation fits any "
+                        "sample cloud better, so those numbers are context, not a "
+                        "ranking."
+                    )
+                warnings.append(
+                    f"Modulation fit is poor: the {mode} constellation leaves "
+                    f"{evm_value:.1f}% error-vector magnitude, so the modulation "
+                    f"estimate is unreliable.{context} Set 'modulation' "
+                    "explicitly if you know the scheme."
+                )
 
         report = {
             "meta": {

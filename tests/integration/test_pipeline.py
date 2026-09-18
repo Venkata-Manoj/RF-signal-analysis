@@ -252,3 +252,108 @@ def test_measurable_bandwidth_is_not_warned_about():
     assert not any(
         "Occupied-bandwidth estimate unavailable" in w for w in report["warnings"]
     ), report["warnings"]
+
+
+# --------------------------------------------------------------------------- #
+# Modulation fit cross-check (EVM vs the chosen constellation)
+# --------------------------------------------------------------------------- #
+def _write_complex64(path, samples) -> None:
+    np.asarray(samples, dtype=np.complex64).tofile(str(path))
+
+
+def test_clean_synthetic_capture_reports_a_good_modulation_fit():
+    capture = SAMPLE_DATA / "bpsk.iq"
+    if not capture.exists():
+        pytest.skip("sample data not generated")
+
+    report = analyze_file(
+        {
+            "file_path": str(capture),
+            "sample_rate": 100000,
+            "iq_format": "complex64",
+            "modulation": "BPSK",
+        }
+    )
+    assert report["quality"]["fit_ok"] is True
+    assert not any("Modulation fit is poor" in w for w in report["warnings"])
+
+
+def test_poor_modulation_fit_is_warned_about_with_bias_caveat(tmp_path):
+    """A Gaussian sample cloud does not fit a 16-QAM constellation.
+
+    This mirrors a real GPS L1 capture (BPSK) that the classifier called
+    16-QAM and which fitted at 39% EVM. The pipeline must flag the poor fit,
+    and must *not* claim another modulation "fits better" -- EVM falls with
+    constellation density, so the numbers are not a ranking.
+    """
+    rng = np.random.default_rng(21)
+    cloud = (rng.normal(size=4096) + 1j * rng.normal(size=4096)).astype(np.complex64)
+    path = tmp_path / "cloud.iq"
+    _write_complex64(path, cloud)
+
+    report = analyze_file(
+        {
+            "file_path": str(path),
+            "sample_rate": 100000,
+            "iq_format": "complex64",
+            "modulation": "16-QAM",
+        }
+    )
+    quality = report["quality"]
+    assert quality["applicable"] is True
+    assert quality["fit_ok"] is False
+
+    fit_warnings = [w for w in report["warnings"] if "Modulation fit is poor" in w]
+    assert fit_warnings, report["warnings"]
+    message = fit_warnings[0]
+    assert "16-QAM" in message
+    assert "error-vector magnitude" in message
+    # The caveat must be present so the numbers are not read as a ranking.
+    assert "not a ranking" in message
+    assert "explicitly" in message
+
+    candidates = quality["candidates"]
+    assert candidates, "expected the other constellations to be reported"
+    assert all(row["mode"] != "16-QAM" for row in candidates)
+    evms = [row["evm_percent"] for row in candidates]
+    assert evms == sorted(evms), "candidates should be listed best-fit first"
+    # The documented bias: the densest constellation fits best.
+    assert candidates[0]["mode"] == "64-QAM"
+    assert candidates[-1]["mode"] == "BPSK"
+
+
+def test_fit_cross_check_is_bounded_for_long_captures(tmp_path, monkeypatch):
+    """The extra candidate evaluations must not scale with capture length.
+
+    ``quality.n_symbols`` describes the chosen constellation's fit over the
+    whole capture; only the *cross-check* is bounded, so observe the sample
+    counts the cross-check actually receives.
+    """
+    from rf_analyzer.config import MODULATION_FIT_MAX_SAMPLES
+    from rf_analyzer.pipeline import compute_evm as pipeline_compute_evm
+
+    rng = np.random.default_rng(22)
+    big = (rng.normal(size=MODULATION_FIT_MAX_SAMPLES * 3) + 0j).astype(np.complex64)
+    path = tmp_path / "big.iq"
+    _write_complex64(path, big)
+
+    seen: list[int] = []
+    real = pipeline_compute_evm
+
+    def spy(samples, mode="BPSK", samples_per_symbol=1):
+        seen.append(int(np.asarray(samples).size))
+        return real(samples, mode=mode, samples_per_symbol=samples_per_symbol)
+
+    monkeypatch.setattr("rf_analyzer.pipeline.compute_evm", spy)
+
+    report = analyze_file(
+        {
+            "file_path": str(path),
+            "sample_rate": 100000,
+            "iq_format": "complex64",
+            "modulation": "16-QAM",
+        }
+    )
+    assert report["quality"]["fit_ok"] is False
+    assert len(seen) >= 2, "expected the chosen fit plus at least one candidate"
+    assert max(seen[1:]) <= MODULATION_FIT_MAX_SAMPLES
