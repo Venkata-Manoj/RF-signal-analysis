@@ -31,6 +31,7 @@ integrity check (CRC) actually passes. We never guess — we verify.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 
 import numpy as np
@@ -60,15 +61,19 @@ def bytes_to_bits(data: bytes) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 
 
+def _crc16_update(crc: int, byte: int) -> int:
+    """Advance a CRC-16/CCITT-FALSE register by one byte."""
+    crc ^= (byte & 0xFF) << 8
+    for _ in range(8):
+        crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
 def crc16_ccitt(data: bytes, init: int = 0xFFFF) -> int:
     """CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, no reflection/xorout)."""
     crc = init & 0xFFFF
     for byte in data:
-        crc ^= (byte & 0xFF) << 8
-        for _ in range(8):
-            crc = (
-                ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
-            )
+        crc = _crc16_update(crc, byte)
     return crc
 
 
@@ -108,15 +113,29 @@ def scan_crc16(buf: bytes, min_payload: int = 1) -> tuple[bool, bytes]:
     was zero-padded to a fixed block size): every candidate split point is
     tested and the longest payload with a matching trailing CRC-16 wins.
 
+    Runs in a single O(n) pass by accumulating the running CRC of every
+    prefix, so the whole hypothesis search stays fast.
+
     A 16-bit check has a 1/65536 false-positive rate per position, so callers
-    should combine this with an independent structural check (e.g. LDPC parity)
-    before trusting it.
+    should combine this with an independent structural check (e.g. LDPC parity
+    or a valid RS codeword) before trusting it.
     """
     buf = bytes(buf)
-    for end in range(len(buf), min_payload + 1, -1):
-        ok, payload = crc16_check(buf[:end])
-        if ok:
-            return True, payload
+    n = len(buf)
+    if n < min_payload + 2:
+        return False, b""
+
+    # running[i] == crc16_ccitt(buf[:i])
+    running = [0xFFFF] * (n + 1)
+    crc = 0xFFFF
+    for i, byte in enumerate(buf):
+        crc = _crc16_update(crc, byte)
+        running[i + 1] = crc
+
+    for end in range(n, min_payload + 2, -1):
+        expected = (buf[end - 2] << 8) | buf[end - 1]
+        if running[end - 2] == expected:
+            return True, buf[: end - 2]
     return False, b""
 
 
@@ -680,7 +699,9 @@ def concatenated_decode(
             "error": str(exc),
         }
     # The RS parity symbols sit at the end; the CRC-16 is inside the RS
-    # message, immediately after the payload.
+    # message, immediately after the payload. Block interleavers zero-pad to
+    # a block boundary, so the payload length is unknown here -> scan the RS
+    # message region for the CRC framing instead of assuming a position.
     if len(corrected) <= nsym:
         return {
             "crc_pass": False,
@@ -689,7 +710,7 @@ def concatenated_decode(
             "rs_ok": True,
             "error": "codeword shorter than the parity block",
         }
-    ok, payload = crc16_check(corrected[: len(corrected) - nsym])
+    ok, payload = scan_crc16(corrected[: len(corrected) - nsym])
     return {
         "crc_pass": bool(ok),
         "payload": payload if ok else b"",
@@ -755,7 +776,8 @@ def score_fec_candidates(bits: np.ndarray) -> dict:
 # --------------------------------------------------------------------------- #
 
 VALIDATED_CONFIDENCE = 0.99
-RS_NSYM_HYPOTHESES = (32, 16, 8)
+# RS(255,223) is the named requirement; 16 is the common shortened variant.
+RS_NSYM_HYPOTHESES = (32, 16)
 
 
 def _attempt(
@@ -798,12 +820,17 @@ def decode_hypotheses(
     *,
     start_offset: int = 0,
     deinterleavers: dict[str, Interleaver] | None = None,
-    max_bits: int = 50_000,
+    max_bits: int = 8192,
+    time_budget_s: float = 3.0,
 ) -> dict:
     """Try real FEC decoders on a hypothesis basis, validated by CRC-16.
 
     Nothing is claimed unless an independent CRC check passes, which keeps the
     honest line from ``info.md`` §30 while still *performing* requirement (iv).
+
+    Hypotheses are ordered cheapest-first and the search stops at the first
+    CRC-valid decode, so a genuine coded capture resolves in a few attempts
+    while an uncoded one is bounded by ``time_budget_s``.
 
     Args:
         bits: Demodulated hard bits.
@@ -813,10 +840,12 @@ def decode_hypotheses(
             inner decoder. Defaults to no de-interleaving.
         max_bits: Cap on how many bits are examined (keeps 1M-sample captures
             inside the §NFR-03 time budget).
+        time_budget_s: Wall-clock ceiling for the whole search.
 
     Returns:
         ``{"attempts": [...], "validated": bool, "best": dict|None,
-        "confidence": float}`` where ``best`` is the first validated attempt.
+        "confidence": float, "budget_exhausted": bool}`` where ``best`` is the
+        first validated attempt.
     """
     stream = np.asarray(bits, dtype=np.uint8).ravel()
     if start_offset > 0:
@@ -838,119 +867,153 @@ def decode_hypotheses(
     if deinterleavers:
         interleaver_map.update(deinterleavers)
 
-    # --- (a) convolutional only ---
+    # De-interleave once per candidate and reuse across every FEC hypothesis
+    # (Viterbi over a 64-state trellis is the expensive part of this search).
+    sources: dict[str, np.ndarray] = {}
     for name, deint in interleaver_map.items():
-        src = stream if deint is None else np.asarray(deint(stream), dtype=np.uint8)
+        try:
+            sources[name] = (
+                stream
+                if deint is None
+                else np.asarray(deint(stream), dtype=np.uint8).ravel()
+            )
+        except Exception:  # a bad hypothesis is a miss, never a crash
+            sources[name] = np.array([], dtype=np.uint8)
 
-        def _conv(src=src):
+    # Hypothesis list ordered cheapest-first so early exit pays off: RS-only
+    # needs no trellis search, Viterbi-based schemes come last.
+    hypotheses: list[tuple[str, dict, Callable[[], dict]]] = []
+
+    def _rs_attempt(src: np.ndarray, nsym: int) -> Callable[[], dict]:
+        def run() -> dict:
+            if src.size % 8 != 0:
+                return {"crc_pass": False, "payload": b"", "error": "not byte-aligned"}
+            word = bits_to_bytes(src)
+            try:
+                corrected, n_err = rs_decode(word, nsym)
+            except (ReedSolomonError, ValueError) as exc:
+                return {"crc_pass": False, "payload": b"", "error": str(exc)}
+            if len(corrected) <= nsym:
+                return {"crc_pass": False, "payload": b"", "error": "short codeword"}
+            # CRC-16 lives inside the RS message, before the parity block;
+            # padding may follow it, so scan rather than assume a position.
+            ok, payload = scan_crc16(corrected[: len(corrected) - nsym])
+            return {"crc_pass": ok, "payload": payload, "errors_corrected": n_err}
+
+        return run
+
+    def _conv_attempt(src: np.ndarray) -> Callable[[], dict]:
+        def run() -> dict:
             info = viterbi_decode(src)
             if info.size > CONV_TAIL:
                 info = info[: info.size - CONV_TAIL]
-            ok, payload = crc16_check(bits_to_bytes(info))
+            ok, payload = scan_crc16(bits_to_bytes(info))
             return {"crc_pass": ok, "payload": payload, "errors_corrected": 0}
 
-        attempts.append(
-            _attempt(
+        return run
+
+    def _concat_attempt(src: np.ndarray, nsym: int) -> Callable[[], dict]:
+        def run() -> dict:
+            res = concatenated_decode(src, nsym=nsym)
+            return {
+                "crc_pass": res["crc_pass"],
+                "payload": res["payload"],
+                "errors_corrected": res["errors_corrected"],
+                "error": res.get("error", ""),
+            }
+
+        return run
+
+    def _ldpc_attempt(src: np.ndarray) -> Callable[[], dict] | None:
+        n_blocks = src.size // LDPC_N
+        if n_blocks < 1:
+            return None
+
+        def run() -> dict:
+            blocks = src[: n_blocks * LDPC_N].reshape(n_blocks, LDPC_N)
+            info = []
+            for blk in blocks:
+                dec = ldpc_decode(blk)
+                if not ldpc_syndrome_ok(dec):
+                    return {
+                        "crc_pass": False,
+                        "payload": b"",
+                        "error": "LDPC parity check failed",
+                    }
+                info.append(dec[:LDPC_K])
+            packed = bits_to_bytes(np.concatenate(info))
+            # The block stream is zero-padded, so the payload length is
+            # unknown: scan for the CRC-16 framing rather than assuming it.
+            ok, payload = scan_crc16(packed)
+            return {"crc_pass": ok, "payload": payload, "errors_corrected": 0}
+
+        return run
+
+    for name, src in sources.items():
+        if src.size == 0:
+            continue
+        for nsym in RS_NSYM_HYPOTHESES:
+            hypotheses.append(
+                (
+                    f"RS(255,{255 - nsym})",
+                    {"interleaver": name, "nsym": nsym},
+                    _rs_attempt(src, nsym),
+                )
+            )
+        ldpc_fn = _ldpc_attempt(src)
+        if ldpc_fn is not None:
+            hypotheses.append(
+                (
+                    "LDPC",
+                    {"interleaver": name, "n_blocks": src.size // LDPC_N},
+                    ldpc_fn,
+                )
+            )
+        hypotheses.append(
+            (
                 "Convolutional r=1/2 K=7",
                 {"interleaver": name, "nsym": None},
-                _conv,
+                _conv_attempt(src),
             )
         )
-
-    # --- (b) Reed-Solomon only (byte-aligned) ---
-    for nsym in RS_NSYM_HYPOTHESES:
-        for name, deint in interleaver_map.items():
-            src = stream if deint is None else np.asarray(deint(stream), dtype=np.uint8)
-            n_bytes = src.size // 8
-
-            def _rs(src=src, nsym=nsym, n_bytes=n_bytes):
-                if n_bytes * 8 != src.size:
-                    return {
-                        "crc_pass": False,
-                        "payload": b"",
-                        "error": "not byte-aligned",
-                    }
-                word = bits_to_bytes(src)
-                try:
-                    corrected, n_err = rs_decode(word, nsym)
-                except (ReedSolomonError, ValueError) as exc:
-                    return {"crc_pass": False, "payload": b"", "error": str(exc)}
-                if len(corrected) <= nsym:
-                    return {
-                        "crc_pass": False,
-                        "payload": b"",
-                        "error": "short codeword",
-                    }
-                # CRC-16 lives inside the RS message, before the parity block.
-                ok, payload = crc16_check(corrected[: len(corrected) - nsym])
-                return {
-                    "crc_pass": ok,
-                    "payload": payload,
-                    "errors_corrected": n_err,
-                }
-
-            attempts.append(
-                _attempt(
-                    f"RS(255,{255 - nsym})", {"interleaver": name, "nsym": nsym}, _rs
-                )
-            )
-
-    # --- (c) LDPC (block-aligned) ---
-    n_blocks = stream.size // LDPC_N
-    if n_blocks >= 1:
-        for name, deint in interleaver_map.items():
-            src = stream if deint is None else np.asarray(deint(stream), dtype=np.uint8)
-
-            def _ldpc(src=src, n_blocks=n_blocks):
-                blocks = src[: n_blocks * LDPC_N].reshape(n_blocks, LDPC_N)
-                info = []
-                for blk in blocks:
-                    dec = ldpc_decode(blk)
-                    if not ldpc_syndrome_ok(dec):
-                        return {
-                            "crc_pass": False,
-                            "payload": b"",
-                            "error": "LDPC parity check failed",
-                        }
-                    info.append(dec[:LDPC_K])
-                packed = bits_to_bytes(np.concatenate(info))
-                # The block stream is zero-padded, so the payload length is
-                # unknown: scan for the CRC-16 framing rather than assuming it.
-                ok, payload = scan_crc16(packed)
-                return {"crc_pass": ok, "payload": payload, "errors_corrected": 0}
-
-            attempts.append(
-                _attempt("LDPC", {"interleaver": name, "n_blocks": n_blocks}, _ldpc)
-            )
-
-    # --- (d) concatenated RS outer + convolutional inner ---
-    for nsym in RS_NSYM_HYPOTHESES:
-        for name, deint in interleaver_map.items():
-            src = stream
-
-            def _concat(src=src, nsym=nsym, deint=deint):
-                res = concatenated_decode(src, nsym=nsym, deinterleave=deint)
-                return {
-                    "crc_pass": res["crc_pass"],
-                    "payload": res["payload"],
-                    "errors_corrected": res["errors_corrected"],
-                    "error": res.get("error", ""),
-                }
-
-            attempts.append(
-                _attempt(
+        for nsym in RS_NSYM_HYPOTHESES:
+            hypotheses.append(
+                (
                     f"Concatenated RS(255,{255 - nsym}) + Conv K=7",
                     {"interleaver": name, "nsym": nsym},
-                    _concat,
+                    _concat_attempt(src, nsym),
                 )
             )
 
-    validated = [a for a in attempts if a["crc_pass"]]
-    best = validated[0] if validated else None
+    best: dict | None = None
+    started = time.monotonic()
+    for name, params, fn in hypotheses:
+        record = _attempt(name, params, fn)
+        attempts.append(record)
+        if record["crc_pass"]:
+            best = record
+            break  # verified — no need to keep searching
+        if time.monotonic() - started > time_budget_s:
+            attempts.append(
+                {
+                    "candidate": "(budget)",
+                    "params": {},
+                    "crc_pass": False,
+                    "confidence": 0.0,
+                    "payload_bytes": 0,
+                    "payload_hex": "",
+                    "errors_corrected": 0,
+                    "note": f"stopped after {time_budget_s:.1f}s time budget",
+                }
+            )
+            break
+
     return {
         "attempts": attempts,
-        "validated": bool(validated),
+        "validated": best is not None,
         "best": best,
         "confidence": float(best["confidence"]) if best else 0.0,
         "n_attempts": len(attempts),
+        "n_hypotheses": len(hypotheses),
+        "budget_exhausted": bool(best is None and len(attempts) < len(hypotheses)),
     }
