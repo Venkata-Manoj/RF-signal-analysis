@@ -238,6 +238,67 @@ def test_uncoded_frame_corrects_nothing_and_says_so(tmp_path):
     assert bytes.fromhex(report_clean["payload"]["decoded"]["hex"]) == MESSAGE
 
 
+def test_uncorroborated_fsk_keeps_its_label_but_loses_its_confidence(tmp_path):
+    """A 2-FSK label the tool cannot confirm must not be reported confidently.
+
+    The classifier's FSK test is "low instantaneous-frequency variance", which is
+    not specific to FSK: measured on the bundled samples it also fires for an
+    unmodulated tone (var 1e-16), narrowband audio (0.18) and speech (0.79),
+    against 0.097 for a genuine burst. Recovering a symbol period is independent
+    evidence, so the pipeline corroborates the label with it.
+
+    Failing to corroborate does not prove the label wrong, so the label is kept
+    rather than swapped for a different unvalidated one -- but the confidence is
+    capped and a warning says so. A genuine FSK capture must be unaffected.
+    """
+    from rf_analyzer.config import MODULATION_UNCORROBORATED_CONFIDENCE
+
+    tone = tmp_path / "tone.iq"
+    n = 20_000
+    t = np.arange(n) / SAMPLE_RATE
+    np.exp(1j * 2 * np.pi * 10_000 * t).astype(np.complex64).tofile(tone)
+
+    report = analyze_file(
+        {
+            "file_path": str(tone),
+            "sample_rate": SAMPLE_RATE,
+            "modulation": "auto",
+            "sync_word": SYNC_WORD,
+        }
+    )
+    assert report["modulation"]["estimated_type"] == "2-FSK"
+    assert report["modulation"]["corroborated"] is False
+    assert report["modulation"]["confidence"] <= MODULATION_UNCORROBORATED_CONFIDENCE
+    assert any("uncorroborated" in w for w in report["warnings"])
+
+    # An explicit user choice is reported as found, not downgraded.
+    explicit = analyze_file(
+        {
+            "file_path": str(tone),
+            "sample_rate": SAMPLE_RATE,
+            "modulation": "2-FSK",
+            "sync_word": SYNC_WORD,
+        }
+    )
+    assert explicit["modulation"]["confidence"] > MODULATION_UNCORROBORATED_CONFIDENCE
+    assert explicit["modulation"]["corroborated"] is False
+
+    # A real 2-FSK capture keeps full confidence.
+    real = tmp_path / "real_fsk.iq"
+    _write_capture(real, "conv", "block", "2-FSK", 10)
+    verified = analyze_file(
+        {
+            "file_path": str(real),
+            "sample_rate": SAMPLE_RATE,
+            "modulation": "auto",
+            "sync_word": SYNC_WORD,
+            **GENEROUS_BUDGET,
+        }
+    )
+    assert verified["modulation"]["corroborated"] is True
+    assert verified["modulation"]["confidence"] > MODULATION_UNCORROBORATED_CONFIDENCE
+
+
 def test_decode_can_be_disabled(tmp_path):
     """The GUI's 'fast mode' must skip the search and say so honestly."""
     path = tmp_path / "fastmode.iq"
