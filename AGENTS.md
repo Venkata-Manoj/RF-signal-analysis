@@ -1,7 +1,7 @@
 # AGENTS.md — RF Signal Analysis Workbench MVP
 
 ## Status / source of truth
-- Repo is feature-complete for the MVP brief: **388 pytest tests passing (1 skipped)**, `python scripts/verify_mvp.py → PASS` (55 individual checks), ruff/black clean. Implements 16-QAM demod, sampling-rate estimation, 2-FSK symbol-period recovery, real FEC codecs + verified decoding, real interleavers, payload extraction, batch analysis, a PyQt6 GUI and a zero-install web dashboard.
+- Repo is feature-complete for the MVP brief: **390 pytest tests passing (1 skipped)**, `python scripts/verify_mvp.py → PASS` (55 individual checks), ruff/black clean. Implements 16-QAM demod, sampling-rate estimation, 2-FSK symbol-period recovery, real FEC codecs + verified decoding, real interleavers, payload extraction, batch analysis, a PyQt6 GUI and a zero-install web dashboard.
 - `README.md` is the user-facing document (written for a non-technical reader) — keep it accurate when behaviour changes.
 - `info.md` is authoritative for scope, schemas, and starter code. Implemented `info.md` §9–§12 gap-closure per `docs/superpowers/plans/2026-09-15-sih26147-gap-closure.md`.
 - Actual layout: `src/rf_analyzer/{config,pipeline,batch,dashboard}.py`, `core/{io,dsp,classifier,demod,correlator,fec,deinterleave,framing,payload,report}.py`, `gui/main_window.py`, `web/dashboard.html`; `scripts/{generate_test_data,run_app,run_pipeline,serve_dashboard,batch_analyze,fetch_real_data,verify_mvp,benchmark_snr}.py`; `tests/{unit,integration}`; `sample_data/`, `real_data/`, `output/`.

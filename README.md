@@ -336,7 +336,7 @@ succeeds. It covers, among others:
 Other useful commands:
 
 ```powershell
-pytest                                        # the full suite (389 tests)
+pytest                                        # the full suite (390 tests)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
 $env:QT_QPA_PLATFORM="offscreen"; pytest tests/integration -q   # GUI tests, headless
