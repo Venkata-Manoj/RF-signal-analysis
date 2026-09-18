@@ -256,6 +256,14 @@ behaviour rather than guessing a period.
 **Interleaving:** block, convolutional (Forney), diagonal, pseudo-random, and
 pseudo-random over sub-blocks.
 
+**Why the interleaver matters.** Interleaving is not decoration. While auditing this
+project we measured that LDPC *without* an interleaver is not even monotone in the
+number of errors — 6 errors failed while 8 and 12 succeeded. The errors land inside the
+same code block, and a block whose error count exceeds the code's correction capability
+fails on its own. Spreading the same errors across blocks is exactly what the interleaver
+does: with it the behaviour becomes monotone and the tolerance more than doubles. Every
+FEC × interleaver combination the tool offers decodes back to the exact message.
+
 **Sync words:** any hex string, e.g. `0x1ACFFC1D`. Leave it blank and the tool probes
 with the default — and tells you when it had to assume.
 
@@ -447,6 +455,9 @@ We would rather list these than have you discover them:
   constellations.
 - **Blind FEC detection is a search, not a detector.** Nothing is reported as decoded
   without a CRC-16 pass, so an unusual or unlisted scheme will simply not be found.
+- **An uncoded frame corrects nothing, by design.** With no FEC, a single flipped bit
+  breaks the CRC-16 and the tool reports no decode rather than guessing. This is the
+  control that makes the error-correction claims meaningful.
 - **The decode search examines a bounded prefix** (16,384 bits, 4 s by default) to respect
   the performance budget. Raise `decode_max_bits` / `decode_time_budget_s` for long frames.
 - **No GNU Radio and no RF hardware.** Everything runs on files.

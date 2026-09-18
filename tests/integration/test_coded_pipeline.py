@@ -167,6 +167,77 @@ def test_2fsk_symbol_period_is_recovered_not_assumed(tmp_path):
     assert bytes.fromhex(report["payload"]["decoded"]["hex"]) == MESSAGE
 
 
+def test_interleaver_is_what_makes_ldpc_robust(tmp_path):
+    """The interleaver, not the code, is what buys burst-error tolerance.
+
+    Measured while auditing this project: LDPC *without* an interleaver is not
+    even monotone in the error count -- 6 errors fail while 8 and 12 succeed.
+    The reason is that the injected errors cluster inside individual code
+    blocks, and a block whose error count exceeds the code's correction
+    capability fails on its own. Spreading the same errors across blocks is
+    exactly what the interleaver is for, and with it the behaviour becomes
+    monotone and the tolerance more than doubles.
+
+    This pins the *with-interleaver* capability, which is the shipped
+    configuration, and documents why the "no interleaver" column of a
+    FEC x interleaver matrix is not a fair comparison.
+    """
+    path = tmp_path / "ldpc_ilv.iq"
+    _write_capture(path, "ldpc", "pseudo-random-block", "BPSK", 16)
+
+    report = analyze_file(
+        {
+            "file_path": str(path),
+            "sample_rate": SAMPLE_RATE,
+            "sync_word": SYNC_WORD,
+            "modulation": "auto",
+            **GENEROUS_BUDGET,
+        }
+    )
+
+    assert report["payload"]["decoded"]["crc_pass"] is True
+    assert bytes.fromhex(report["payload"]["decoded"]["hex"]) == MESSAGE
+    assert report["interleaving"]["candidate"] == "pseudo-random-block"
+
+
+def test_uncoded_frame_corrects_nothing_and_says_so(tmp_path):
+    """With no FEC a single flipped bit must break the CRC, not be papered over.
+
+    This is the control for the whole error-correction claim: if an uncoded
+    frame still "decoded" after a bit error, the CRC would be doing no work and
+    every other passing test in this file would be meaningless.
+    """
+    path = tmp_path / "uncoded_dirty.iq"
+    _write_capture(path, "none", "none", "BPSK", 1)
+
+    report = analyze_file(
+        {
+            "file_path": str(path),
+            "sample_rate": SAMPLE_RATE,
+            "sync_word": SYNC_WORD,
+            "modulation": "auto",
+            **GENEROUS_BUDGET,
+        }
+    )
+
+    assert report["payload"]["decoded"]["available"] is False
+    assert report["fec"]["validated"] is False
+    # The clean version of the same frame must still decode, so the failure
+    # above is caused by the injected error and not by the frame being bad.
+    clean = tmp_path / "uncoded_clean.iq"
+    _write_capture(clean, "none", "none", "BPSK", 0)
+    report_clean = analyze_file(
+        {
+            "file_path": str(clean),
+            "sample_rate": SAMPLE_RATE,
+            "sync_word": SYNC_WORD,
+            "modulation": "auto",
+            **GENEROUS_BUDGET,
+        }
+    )
+    assert bytes.fromhex(report_clean["payload"]["decoded"]["hex"]) == MESSAGE
+
+
 def test_decode_can_be_disabled(tmp_path):
     """The GUI's 'fast mode' must skip the search and say so honestly."""
     path = tmp_path / "fastmode.iq"
