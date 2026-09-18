@@ -263,13 +263,20 @@ behaviour rather than guessing a period.
 **Interleaving:** block, convolutional (Forney), diagonal, pseudo-random, and
 pseudo-random over sub-blocks.
 
-**Why the interleaver matters.** Interleaving is not decoration. While auditing this
-project we measured that LDPC *without* an interleaver is not even monotone in the
-number of errors — 6 errors failed while 8 and 12 succeeded. The errors land inside the
-same code block, and a block whose error count exceeds the code's correction capability
-fails on its own. Spreading the same errors across blocks is exactly what the interleaver
-does: with it the behaviour becomes monotone and the tolerance more than doubles. Every
-FEC × interleaver combination the tool offers decodes back to the exact message.
+**Why the interleaver matters.** Interleaving is not decoration. LDPC correction is
+*probabilistic*: at a fixed error count the outcome depends on how the errors happen to
+land across the 84-bit code blocks, so it is not reliably monotone. Measured over five
+seeds, the block interleaver decodes 8 errors *less* often than 10 (3 times out of 5,
+against 5 out of 5).
+
+The interleaver's real benefit shows against **bursts**, which is what it exists for. With
+a contiguous burst of 8 bits, no interleaver recovers the message at all (0 times out of
+5), while the pseudo-random sub-block interleaver still recovers it 3 times out of 5 — and
+without an interleaver a burst of 8 is already fatal. So it roughly doubles the burst
+length tolerated. It does *not* help against uniformly scattered errors, because those are
+spread across blocks already. Every FEC × interleaver combination the tool offers is
+identified and decodes back to the exact message, at error loads inside each scheme's
+measured tolerance.
 
 **Sync words:** any hex string, e.g. `0x1ACFFC1D`. Leave it blank and the tool probes
 with the default — and tells you when it had to assume.
@@ -330,7 +337,9 @@ succeeds. It covers, among others:
 
 - the core pipeline on a clean BPSK capture (BER < 0.01, correlation > 0.9)
 - all six coded captures decoding back to the **exact transmitted message**, with the
-  transmitter's FEC scheme and interleaver identified from the bit stream alone
+  transmitter's FEC scheme and interleaver identified from the bit stream alone (the test
+  suite sweeps all 30 FEC × interleaver combinations, so the search cannot hide behind
+  the six captures we happen to ship)
 - **2-FSK symbol-period recovery** (the one modulation that is not one sample per bit)
 - **no payload invented** from random bits, and blind FEC scores staying capped
 - IQ-format auto-detection
@@ -343,9 +352,10 @@ succeeds. It covers, among others:
 Other useful commands:
 
 ```powershell
-pytest                                        # the full suite (391 tests)
+pytest                                        # the full suite (421 tests)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
+python scripts/measure_fec_capability.py      # re-derive the FEC tolerance numbers below
 $env:QT_QPA_PLATFORM="offscreen"; pytest tests/integration -q   # GUI tests, headless
 ```
 
