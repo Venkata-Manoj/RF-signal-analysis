@@ -1,22 +1,29 @@
 """A framed burst inside noise -- the realistic capture -- and what it costs.
 
 Every other coded-capture test in this suite writes the frame as the *whole*
-file. A real recording is a burst surrounded by noise, and that difference used
-to break two things: the modulation label, and the decode.
+file. A real recording is a burst surrounded by noise, and that difference broke
+three things. All three are fixed, and this file is the record of each.
 
-The label half is now fixed. The classifier works from whole-capture statistics,
-which are not invariant to how much noise surrounds the burst, so a clean BPSK
-burst was labelled QPSK or 8PSK. A wrong label hides the sync word, so the report
-said "no frame found" and pointed the user at a framing bug that was really a
-classification one. ``pipeline._corroborate_modulation`` now lets the header
-search arbitrate: when the chosen demodulation sees a hint of the sync word but
-cannot confirm it, the other candidates are tried.
+1. **The modulation label.** The classifier works from whole-capture statistics,
+   which are not invariant to how much noise surrounds the burst, so a clean BPSK
+   burst was labelled QPSK or 8PSK. A wrong label hides the sync word, so the
+   report said "no frame found" and pointed the user at a framing bug that was
+   really a classification one. ``pipeline._corroborate_modulation`` now lets the
+   header search arbitrate: when the chosen demodulation sees a hint of the sync
+   word but cannot confirm it, the other candidates are tried.
 
-The decode half is *mostly* fixed: the CRC anchor used to be able to land on a
-documented deterministic false positive and report a verified payload carrying
-one extra trailing byte, which is the worst failure mode this tool can have. The
-remaining decode limitation is different and is pinned at the bottom of this
-file: the search assumes the capture ends at the frame boundary.
+2. **A CRC-verified payload with one extra trailing byte.** The CRC anchor could
+   land on a documented deterministic false positive. Fixed in ``fec``; see
+   ``tests/unit/test_fec_codecs.py`` for the mechanism.
+
+3. **A noise tail hiding the frame.** The CRC anchor is searched near the end of
+   the stream, so a frame followed by a noise tail was never found even when
+   everything else was perfect. ``signal.burst`` now measures where the burst
+   ends and bounds the search with it.
+
+The honesty invariant runs through all of them: a reported decode is exactly the
+message, never the message plus something. Failing to decode is acceptable;
+reporting a wrong payload is not.
 """
 
 from __future__ import annotations
@@ -201,60 +208,106 @@ def test_a_reported_decode_is_always_exactly_the_message(tmp_path, pad):
     decoded = _analyze(path)["payload"]["decoded"]
 
     if not decoded["available"]:
-        # Failing to decode is acceptable (see the limitation below); reporting a
-        # wrong payload is not.
+        # Failing to decode is acceptable; reporting a wrong payload is not.
         return
     assert decoded["crc_pass"] is True
     assert bytes.fromhex(decoded["hex"]) == MESSAGE
 
 
 # --------------------------------------------------------------------------- #
-# Known limitation: the decode still assumes the capture ends at the frame.
+# The burst estimate is what makes a real capture decodable.
 # --------------------------------------------------------------------------- #
 
 
-def test_the_coded_region_must_end_the_capture_to_decode(tmp_path):
-    """Known limitation: the decode search assumes the capture ends at the frame.
+@pytest.mark.parametrize("pad", [800, 1_600, 4_000])
+def test_a_noise_tail_no_longer_blocks_the_decode(tmp_path, pad):
+    """A frame followed by noise must still decode.
 
-    ``decode_hypotheses`` takes a ``frame_bits`` argument precisely for this, but
-    the pipeline has no way to know the burst length from the signal alone, so it
-    passes nothing and the search assumes a single-burst capture. A trailing tail
-    therefore breaks the CRC-16 anchor even when everything else is perfect.
+    This used to fail, and the failure looked like a decoding bug: the modulation
+    was right, the sync word was found at exactly the right offset with score 1.0,
+    and ``budget_exhausted`` was False -- only the decode failed. The real cause
+    was that the CRC anchor is searched near the *end of the stream*, so a noise
+    tail put the anchor on noise instead of on the frame.
 
-    Note how strong the rest of the evidence is: the modulation is right, the
-    sync word is found at exactly the right offset, and the score is 1.0. Only
-    the decode fails. That is why this is worth stating rather than leaving to be
-    discovered -- it looks like a decoding bug but is really a missing
-    frame-length estimate (a V2 item).
+    ``signal.burst`` now measures where the burst ends, and that length bounds the
+    search. These paddings are exactly the ones that used to fail.
     """
-    path = tmp_path / "padded.iq"
-    _burst_in_noise(path, pad=1_600)
+    path = tmp_path / f"tail_{pad}.iq"
+    frame = _burst_in_noise(path, pad=pad)
     report = _analyze(path)
 
     assert report["modulation"]["estimated_type"] == "BPSK"
-    assert report["correlation"]["detected"] is True
-    assert report["correlation"]["score"] == 1.0
-    assert report["correlation"]["header_offset"] == 1_600
+    assert report["correlation"]["header_offset"] == pad
 
-    assert report["payload"]["decoded"]["available"] is False
-    # Not a budget problem -- the search simply cannot anchor the CRC.
-    assert report["payload"]["decode_search"]["budget_exhausted"] is False
+    burst = report["signal"]["burst"]
+    assert burst["found"] is True
+    assert burst["snr_db"] > 20.0
 
-
-def test_capping_the_decode_prefix_restores_the_decode(tmp_path):
-    """The workaround for the limitation above, and the evidence for its cause.
-
-    Capping ``decode_max_bits`` to just past the frame excludes the noise tail
-    from the search, so the CRC anchor is correct again and the payload decodes.
-    That is what identifies the missing frame-length estimate as the cause,
-    rather than the noise itself.
-    """
-    path = tmp_path / "capped.iq"
-    frame = _burst_in_noise(path, pad=1_600)
-
-    report = _analyze(path, decode_max_bits=int(frame["bits"].size))
+    # The estimator's error is one-sided by construction: a block counts as burst
+    # when its mean power clears the threshold, so a block holding even a little
+    # burst is included. Never early, and never more than one window late.
+    n_frame = int(frame["bits"].size)
+    assert pad + n_frame <= burst["end_sample"] <= pad + n_frame + burst["window"]
 
     decoded = report["payload"]["decoded"]
     assert decoded["available"] is True
     assert decoded["crc_pass"] is True
     assert bytes.fromhex(decoded["hex"]) == MESSAGE
+
+    # The search must have been bounded by the estimate, not by the capture end.
+    assert report["payload"]["decode_search"]["frame_bits"] is not None
+    assert any("burst region ends at sample" in w for w in report["warnings"])
+
+
+def test_an_explicit_frame_bits_still_wins(tmp_path):
+    """An explicit hint is the caller's, not ours to override."""
+    path = tmp_path / "explicit_hint.iq"
+    frame = _burst_in_noise(path, pad=1_600)
+    coded_bits = int(frame["bits"].size) - 32  # minus the sync word
+
+    report = _analyze(path, frame_bits=coded_bits)
+
+    assert report["payload"]["decode_search"]["frame_bits"] == coded_bits
+    decoded = report["payload"]["decoded"]
+    assert decoded["available"] is True
+    assert bytes.fromhex(decoded["hex"]) == MESSAGE
+
+
+def test_a_noise_gap_is_required_to_measure_a_burst(tmp_path):
+    """A capture with no noise gap has no burst to find, so nothing changes.
+
+    The bare-frame captures fill their file, and the real-world recordings are
+    continuous signals. Neither has a burst, and both must keep decoding exactly
+    as they did before this estimate existed -- so no hint is derived and the
+    search falls back to assuming the capture ends at the frame.
+    """
+    path = tmp_path / "continuous.iq"
+    _burst_in_noise(path, pad=0)
+    report = _analyze(path)
+
+    burst = report["signal"]["burst"]
+    assert burst["found"] is False
+    assert burst["end_sample"] is None
+    assert report["payload"]["decode_search"]["frame_bits"] is None
+    assert bytes.fromhex(report["payload"]["decoded"]["hex"]) == MESSAGE
+
+
+def test_a_measured_burst_is_never_evidence_on_its_own(tmp_path):
+    """The estimate narrows a search; the CRC-16 still decides.
+
+    A burst of random bits in noise is measured -- a burst genuinely is there, so
+    the search does get bounded by it -- and the report still claims no payload,
+    because no CRC-16 validates. Without this, a region estimate would be a way to
+    produce a decode that is not there.
+    """
+    path = tmp_path / "random_burst.iq"
+    rng = np.random.default_rng(3)
+    core = ((rng.integers(0, 2, size=2_000) * 2.0) - 1.0).astype(np.complex64)
+    lead = (rng.standard_normal(800) + 1j * rng.standard_normal(800)) * 0.05
+    trail = (rng.standard_normal(800) + 1j * rng.standard_normal(800)) * 0.05
+    np.concatenate([lead, core, trail]).astype(np.complex64).tofile(path)
+
+    report = _analyze(path)
+
+    assert report["signal"]["burst"]["found"] is True
+    assert report["payload"]["decoded"]["available"] is False

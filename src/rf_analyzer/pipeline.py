@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 
 from rf_analyzer.config import (
+    BURST_FRAME_SLACK_BITS,
     CORRELATION_THRESHOLD,
     DECODE_MAX_BITS,
     DECODE_TIME_BUDGET_S,
@@ -48,6 +49,7 @@ from rf_analyzer.core.dsp import (
     compute_evm,
     compute_psd,
     estimate_bandwidth,
+    estimate_burst_region,
     estimate_center_frequency,
     estimate_cfo,
     estimate_fsk_symbol_period,
@@ -295,6 +297,13 @@ def analyze_file(request: dict) -> dict:
             cfo_estimate = float(estimate_cfo(samples, sample_rate))
         except Exception:
             cfo_estimate = 0.0
+        # Where does the signal actually end? A real recording is a burst in
+        # noise, and the CRC anchor is searched near the end of the stream, so
+        # this is what stops a noise tail from hiding the frame (see the decode
+        # block below). Reported as a measurement in its own right, and `found`
+        # is False for a continuous signal or a capture that is all burst, in
+        # which case nothing downstream changes.
+        burst = estimate_burst_region(samples)
 
         requested = str(request.get("modulation", "auto") or "auto").upper()
         if requested == "AUTO":
@@ -551,6 +560,40 @@ def analyze_file(request: dict) -> dict:
         # unless an independent CRC-16 check passes (info.md §30).
         decode_enabled = bool(request.get("decode", True))
         frame_bits = request.get("frame_bits")
+        # With no explicit hint, derive one from the burst region. The CRC anchor
+        # is searched near the end of the stream, so a frame followed by a noise
+        # tail has its anchor land on noise and the frame is never found -- the
+        # most likely failure on a real recording, where the burst is surrounded
+        # by noise. Telling the search where the burst ends is what fixes it.
+        #
+        # The hint is biased *long* (slack, plus an estimator that lands late by
+        # construction). That asymmetry is deliberate: appending bits leaves every
+        # earlier de-interleaver block intact, while truncating below the true
+        # frame end corrupts the last block and destroys the CRC. Excess is
+        # absorbed by the CRC search window, so the hint only ever removes a
+        # reason to fail -- it can never manufacture a decode, because the CRC
+        # still decides.
+        auto_frame_bits: int | None = None
+        if frame_bits is None and burst["found"] and correlation["detected"]:
+            samples_per_bit = samples.size / max(bits.size, 1)
+            burst_end_bits = round(int(burst["end_sample"]) / samples_per_bit)
+            if burst_end_bits > payload_start:
+                auto_frame_bits = (
+                    burst_end_bits - payload_start + BURST_FRAME_SLACK_BITS
+                )
+                if auto_frame_bits < bits.size:
+                    warnings.append(
+                        f"The burst region ends at sample {burst['end_sample']}, "
+                        f"so the decode search was bounded to {auto_frame_bits} "
+                        "coded bits past the sync word instead of assuming the "
+                        "capture ends at the frame. Estimated from the power "
+                        "envelope; see signal.burst."
+                    )
+                else:
+                    # The estimate covers the whole capture, so there is nothing
+                    # to trim and the hint would be a no-op.
+                    auto_frame_bits = None
+
         # The search is wall-clock bounded so a huge capture cannot blow the
         # §NFR-03 budget. Both limits are overridable per request: a caller who
         # knows the frame is long can raise them, and a correctness test can
@@ -577,7 +620,7 @@ def analyze_file(request: dict) -> dict:
                     start_offset=payload_start,
                     max_bits=decode_max_bits,
                     time_budget_s=decode_budget,
-                    frame_bits=int(frame_bits) if frame_bits else None,
+                    frame_bits=(int(frame_bits) if frame_bits else auto_frame_bits),
                 )
             except Exception as exc:  # a failed search is a miss, not an error
                 warnings.append(f"FEC/interleaver search skipped: {exc}")
@@ -601,6 +644,10 @@ def analyze_file(request: dict) -> dict:
             ),
             "max_bits": decode_max_bits,
             "time_budget_s": decode_budget,
+            # The coded-region length the search actually used: the caller's
+            # explicit hint, else the one derived from signal.burst, else None
+            # (which means "assume the capture ends at the frame").
+            "frame_bits": int(frame_bits) if frame_bits else auto_frame_bits,
         }
         if decode_enabled and not validated:
             warnings.append(
@@ -751,6 +798,12 @@ def analyze_file(request: dict) -> dict:
                 "sample_rate_estimate": sample_rate_estimate,
                 "symbol_rate_estimate": symbol_rate_estimate,
                 "cfo_estimate_hz": cfo_estimate,
+                # Additive: where the signal burst starts and ends, estimated
+                # from the power envelope. `found` is False for a continuous
+                # signal or a capture that is all burst, and then no burst
+                # measurement is claimed. `end_sample` is what bounds the decode
+                # search when the capture continues past the frame.
+                "burst": burst,
             },
             "modulation": {
                 "estimated_type": estimated_type,
