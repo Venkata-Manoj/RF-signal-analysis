@@ -164,6 +164,7 @@ The names below are jargon, but the ideas are simple.
 | `bandwidth_estimate` | Roughly how much spectrum the signal occupies. |
 | `snr_db` | Signal-to-noise ratio. Higher is cleaner. |
 | `symbol_rate_estimate` | How many symbols per second the signal carries. |
+| `burst` | Where the signal actually starts and ends inside the file, measured from the power envelope — a real recording is a burst surrounded by noise. `found: false` means the capture is continuous (or is all burst), so there is no burst to measure. This is also what lets a frame followed by noise still decode. |
 | `cfo_estimate_hz` | Carrier frequency offset — how far the signal drifted from where it should be. |
 | `center_frequency_estimate` | Where in the spectrum the strongest energy sits. |
 
@@ -353,7 +354,7 @@ every one succeeds. It covers, among others:
 Other useful commands:
 
 ```powershell
-pytest                                        # the full suite (443 tests)
+pytest                                        # the full suite (456 tests)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
 python scripts/measure_fec_capability.py      # re-derive the FEC tolerance numbers below
@@ -502,16 +503,14 @@ We would rather list these than have you discover them:
   control that makes the error-correction claims meaningful.
 - **The decode search examines a bounded prefix** (16,384 bits, 4 s by default) to respect
   the performance budget. Raise `decode_max_bits` / `decode_time_budget_s` for long frames.
-- **A decode is only found while the CRC anchor can still reach the frame end.** The
-  decoder assumes a single-burst capture, so it anchors the CRC-16 to the end of the
-  capture. A short trailing tail is tolerated — measured on the bundled frame, a tail of up
-  to 400 samples still decodes exactly — but beyond that the anchor no longer lands on the
-  frame and the decode fails. The receiver has no way to know the burst length from the
-  signal alone; estimating it is a V2 item. Workaround: cap `decode_max_bits` to just past
-  the frame, which is what makes this a missing frame-length estimate rather than a decoding
-  fault. What matters most is that it fails *honestly*: across every padding value tested,
-  the tool never once reported a wrong payload, only a correct one or none. Pinned by
-  `tests/integration/test_burst_in_noise.py`.
+- **The burst measurement needs a noise gap, and declines without one.** The start and end of
+  the burst are found from the power envelope, so a continuous recording — or a capture that
+  is all burst, like the bundled bare-frame samples — reports `found: false` and no burst is
+  claimed. That is deliberate, because the estimate only ever *narrows* the decode search:
+  the CRC-16 still decides, so a wrong estimate can cost a decode but can never invent one.
+  Measured across bursts occupying 0.4%–69% of their capture, the estimated edge lands at
+  most one envelope block late and never early — late being the direction the decoder can
+  absorb. Pinned by `tests/integration/test_burst_in_noise.py` and `tests/unit/test_dsp.py`.
 - **No GNU Radio and no RF hardware.** Everything runs on files.
 
 ---
