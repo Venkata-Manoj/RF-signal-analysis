@@ -1,7 +1,7 @@
 # AGENTS.md — RF Signal Analysis Workbench MVP
 
 ## Status / source of truth
-- Repo is feature-complete for the MVP brief: **456 pytest tests passing (1 skipped)**, `python scripts/verify_mvp.py → PASS` (57 individual checks, and the harness prints that count itself so it cannot drift), ruff/black clean. Implements 16-QAM demod, sampling-rate estimation, 2-FSK symbol-period recovery, real FEC codecs + verified decoding, real interleavers, payload extraction, batch analysis, a PyQt6 GUI and a zero-install web dashboard.
+- Repo is feature-complete for the MVP brief: **461 pytest tests passing (1 skipped)**, `python scripts/verify_mvp.py → PASS` (57 individual checks with `real_data/` fetched; **48 passed + 1 skipped on a fresh clone**, because that group is skipped rather than failed — the harness prints the count it actually ran and names its skips, so quote what it prints rather than a fixed number), ruff/black clean. Implements 16-QAM demod, sampling-rate estimation, 2-FSK symbol-period recovery, real FEC codecs + verified decoding, real interleavers, payload extraction, batch analysis, a PyQt6 GUI and a zero-install web dashboard.
 - `README.md` is the user-facing document (written for a non-technical reader) — keep it accurate when behaviour changes.
 - `info.md` is authoritative for scope, schemas, and starter code. Implemented `info.md` §9–§12 gap-closure per `docs/superpowers/plans/2026-09-15-sih26147-gap-closure.md`.
 - Actual layout: `src/rf_analyzer/{config,pipeline,batch,dashboard}.py`, `core/{io,dsp,classifier,demod,correlator,fec,deinterleave,framing,payload,report}.py`, `gui/main_window.py`, `web/dashboard.html`; `scripts/{generate_test_data,run_app,run_pipeline,serve_dashboard,batch_analyze,fetch_real_data,verify_mvp,benchmark_snr}.py`; `tests/{unit,integration}`; `sample_data/`, `real_data/`, `output/`.
@@ -43,7 +43,7 @@ python scripts/generate_test_data.py   # required before integration tests; seed
 pytest                                  # all
 pytest tests/unit/test_io.py -q         # single file/module pattern
 $env:QT_QPA_PLATFORM="offscreen"; pytest tests/integration -q  # GUI smoke test needs this
-python scripts/verify_mvp.py            # must print PASS (§23); 57 checks
+python scripts/verify_mvp.py            # must print PASS (§23); 57 checks with real_data/, 48+1 skip without
 python scripts/run_app.py               # GUI; headless check: scripts/run_pipeline.py
 python scripts/serve_dashboard.py --open  # zero-install web dashboard (127.0.0.1:8765)
 python scripts/run_pipeline.py sample_data/bpsk.iq --sample-rate 100000 --iq-format auto
@@ -52,6 +52,7 @@ python scripts/fetch_real_data.py       # real OTA captures (network); --list fo
 python scripts/measure_fec_capability.py --quick  # re-derive the documented FEC tolerance numbers
 python scripts/benchmark_performance.py  # re-derive the NFR timings (each case in its own process)
 ```
+- **`mypy` is advisory, not a gate.** It is installed (`requirements-dev.txt`) but has no config and is not clean: `mypy src/rf_analyzer` reports ~40 errors — ~25 are Qt stub noise in `gui/main_window.py` (`QStyle | None`), the rest are narrowing complaints where a `dict[str, object]` is indexed or an untyped third-party module (`soundfile`) is imported. The gate is `pytest` + `ruff` + `black` + `verify_mvp.py`, all clean. Do not "fix" this by loosening the config; either fix a real one or leave it.
 - Order matters: `install → generate_test_data → pytest`. Integration tests read `sample_data/bpsk.iq|bpsk.wav` and fail if data wasn't generated.
 - **`verify_mvp.py` passes pytest its own fresh `--basetemp`.** Left alone, pytest *prunes* old basetemps it finds — a bulk delete of directories the harness does not own. Where deletions are budgeted or guarded, that prune can kill the test runner mid-session and surface as a `FAIL` from `run_command` on a suite that actually passed (observed: every test file at 100% with zero `[FAIL]` checks, then a non-zero exit from the prune). An explicit basetemp makes pytest skip pruning entirely. Do the same if you invoke `pytest` yourself: `pytest -q --basetemp="$TEMP/rf_run_a"`. Diagnose it by the signature — a `FAIL` with no `[FAIL]` line above it is an environment kill, not a test failure.
 - Perf budget (NFR): ≤100 MB files, 1–2 M samples responsive, 1 M samples <10 s. **Measured** (`scripts/benchmark_performance.py`, `complex64`, realistic burst-in-noise captures): 1 M → 2.8 s median (1.8–4.1 s) **PASS with ~3–4× headroom**; 2 M → 6.5 s (4.1–12.1 s); 100 MB / 12.5 M → 30 s quiet (30–32 s back to back) but **499 s under external load on the same machine**. So only the 1 M row carries a budget — report the *range*, never a single number: absolute wall-clock here moves by 15× with machine load and no change in the work. Measure each case in its own process; running several large analyses back to back in one process inflates the later ones (the 2 M case read 10.4 s behind the 1 M repeats against 4.1 s isolated). No RF hardware needed for tests; only `fetch_real_data.py` touches the network.

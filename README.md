@@ -344,7 +344,18 @@ says so and exits `2` rather than failing obscurely.)*
 This regenerates the test data, runs the whole test suite, and then performs **57
 individual checks** end to end — it prints that count itself, so the number here
 cannot drift away from what actually ran. It prints `PASS` and exits `0` only if
-every one succeeds. It covers, among others:
+nothing fails; a check whose inputs are missing is printed as `[SKIP]` and left out
+of the passed count rather than folded into it.
+
+**The total depends on one thing: the third-party recordings.** `real_data/` is not
+committed (they are large binaries — see
+[Testing with real radio recordings](#testing-with-real-radio-recordings)), so a fresh
+clone reports **48 passed, 1 skipped** — that group is skipped rather than failed —
+against the full **57** once you run `python scripts/fetch_real_data.py`. The harness
+prints whichever it actually ran, and names any skips so "N passed" never quietly
+includes a group that never ran.
+
+It covers, among others:
 - the core pipeline on a clean BPSK capture (BER < 0.01, correlation > 0.9)
 - all six coded captures decoding back to the **exact transmitted message**, with the
   transmitter's FEC scheme and interleaver identified from the bit stream alone (the test
@@ -362,7 +373,7 @@ every one succeeds. It covers, among others:
 Other useful commands:
 
 ```powershell
-pytest                                        # the full suite (456 tests)
+pytest                                        # the full suite (461 tests)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
 python scripts/measure_fec_capability.py      # re-derive the FEC tolerance numbers below

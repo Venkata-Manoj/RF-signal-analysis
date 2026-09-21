@@ -19,7 +19,7 @@ import soundfile as sf
 
 
 def load_iq(
-    file_path: str, dtype: str = "complex64", endian: str = "little"
+    file_path: str | Path, dtype: str = "complex64", endian: str = "little"
 ) -> np.ndarray:
     """
     Load raw IQ file.
@@ -88,7 +88,7 @@ def load_iq(
     return samples.astype(np.complex64)
 
 
-def load_wav(file_path: str) -> tuple[np.ndarray, float]:
+def load_wav(file_path: str | Path) -> tuple[np.ndarray, float]:
     """
     Load WAV file.
 
