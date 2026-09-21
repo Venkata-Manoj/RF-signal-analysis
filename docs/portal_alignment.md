@@ -43,7 +43,7 @@ function name is the durable reference.
 
 `python scripts/verify_mvp.py → PASS` (57 checks, 0 failures — a fresh clone reports
 48 passed + 1 skipped, because the third-party `real_data/` group is skipped rather
-than failed) and `pytest` (461 passed, 1 skipped). The requirement matrix is exercised
+than failed) and `pytest` (462 passed, 1 skipped). The requirement matrix is exercised
 end to end: every one
 of the 30 FEC × interleaver combinations is identified and decodes back to the
 exact message, and all four modulations decode end to end. Error loads are chosen

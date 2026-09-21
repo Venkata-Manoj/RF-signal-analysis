@@ -373,7 +373,7 @@ It covers, among others:
 Other useful commands:
 
 ```powershell
-pytest                                        # the full suite (461 tests)
+pytest                                        # the full suite (462 tests)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
 python scripts/measure_fec_capability.py      # re-derive the FEC tolerance numbers below
