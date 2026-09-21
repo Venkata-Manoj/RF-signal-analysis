@@ -42,7 +42,7 @@ function name is the durable reference.
 ## Verification
 
 `python scripts/verify_mvp.py → PASS` (57 checks, 0 failures) and `pytest`
-(456 passed, 1 skipped). The requirement matrix is exercised end to end: every one
+(455 passed, 1 skipped). The requirement matrix is exercised end to end: every one
 of the 30 FEC × interleaver combinations is identified and decodes back to the
 exact message, and all four modulations decode end to end. Error loads are chosen
 per scheme, inside each scheme's measured tolerance — LDPC correction is

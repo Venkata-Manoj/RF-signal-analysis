@@ -243,11 +243,18 @@ def test_a_noise_tail_no_longer_blocks_the_decode(tmp_path, pad):
     assert burst["found"] is True
     assert burst["snr_db"] > 20.0
 
-    # The estimator's error is one-sided by construction: a block counts as burst
-    # when its mean power clears the threshold, so a block holding even a little
-    # burst is included. Never early, and never more than one window late.
+    # The estimator's error is *not* one-sided. A boundary block that is mostly
+    # noise can miss the threshold and stop the estimate short; at this ~26 dB
+    # separation the threshold sits near the noise floor, so the block clears and
+    # the estimate runs long by at most one window instead. Do not generalise
+    # that -- see test_burst_region_edge_error_stays_within_three_windows -- and
+    # see test_an_early_burst_edge_still_decodes for the direction that actually
+    # threatens the frame. What matters is that the decode survives the error,
+    # which is asserted below.
     n_frame = int(frame["bits"].size)
-    assert pad + n_frame <= burst["end_sample"] <= pad + n_frame + burst["window"]
+    # BPSK is one bit per sample, so the frame's sample length is its bit count.
+    true_end = pad + n_frame
+    assert true_end <= burst["end_sample"] <= true_end + burst["window"]
 
     decoded = report["payload"]["decoded"]
     assert decoded["available"] is True
@@ -257,6 +264,40 @@ def test_a_noise_tail_no_longer_blocks_the_decode(tmp_path, pad):
     # The search must have been bounded by the estimate, not by the capture end.
     assert report["payload"]["decode_search"]["frame_bits"] is not None
     assert any("burst region ends at sample" in w for w in report["warnings"])
+
+
+def test_an_early_burst_edge_still_decodes(tmp_path):
+    """The estimate can land *early*, and the decode must survive it anyway.
+
+    Early is the direction that threatens the frame: a boundary block that is
+    mostly noise can miss the threshold and stop the estimate short of the true
+    end, which truncates the search window below the frame. ``BURST_FRAME_SLACK_BITS``
+    is biased long precisely to absorb that, and this pins it end to end. Here
+    the estimate lands 8 samples early and the decode is still exact.
+
+    Measured over a 420-case sweep (4 modulations x 5 noise levels x 7 paddings x
+    3 seeds) every early edge that reached the decoder still decoded the exact
+    message, and no case ever produced a wrong payload -- which is the property
+    that matters, because the CRC-16 still decides.
+    """
+    path = tmp_path / "early.iq"
+    pad = 200
+    frame = _burst_in_noise(path, pad=pad, amplitude=0.1)
+    report = _analyze(path)
+
+    burst = report["signal"]["burst"]
+    n_frame = int(frame["bits"].size)
+    assert burst["found"] is True
+    assert burst["end_sample"] < pad + n_frame, (
+        "this configuration is expected to land the edge early; if it no longer "
+        "does, pick another rather than deleting the test -- the early direction "
+        "is the one the slack exists for"
+    )
+
+    decoded = report["payload"]["decoded"]
+    assert decoded["available"] is True
+    assert decoded["crc_pass"] is True
+    assert bytes.fromhex(decoded["hex"]) == MESSAGE
 
 
 def test_an_explicit_frame_bits_still_wins(tmp_path):

@@ -354,7 +354,7 @@ every one succeeds. It covers, among others:
 Other useful commands:
 
 ```powershell
-pytest                                        # the full suite (456 tests)
+pytest                                        # the full suite (455 tests)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
 python scripts/measure_fec_capability.py      # re-derive the FEC tolerance numbers below
@@ -508,9 +508,14 @@ We would rather list these than have you discover them:
   is all burst, like the bundled bare-frame samples — reports `found: false` and no burst is
   claimed. That is deliberate, because the estimate only ever *narrows* the decode search:
   the CRC-16 still decides, so a wrong estimate can cost a decode but can never invent one.
-  Measured across bursts occupying 0.4%–69% of their capture, the estimated edge lands at
-  most one envelope block late and never early — late being the direction the decoder can
-  absorb. Pinned by `tests/integration/test_burst_in_noise.py` and `tests/unit/test_dsp.py`.
+  Measured across bursts occupying 0.4%–69% of their capture, the estimated edge lands within
+  a couple of envelope blocks of the true edge — in *either* direction, because a boundary
+  block that is mostly noise can miss the threshold and stop the estimate short. Both
+  directions are absorbed downstream: the search is biased long by `BURST_FRAME_SLACK_BITS`
+  and the CRC anchor tolerates excess. Across a 420-case sweep (4 modulations × 5 noise
+  levels × 7 paddings × 3 seeds) every capture that decoded returned the exact message, and
+  **no case ever produced a wrong payload**. Pinned by
+  `tests/integration/test_burst_in_noise.py` and `tests/unit/test_dsp.py`.
 - **No GNU Radio and no RF hardware.** Everything runs on files.
 
 ---

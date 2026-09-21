@@ -716,11 +716,20 @@ def estimate_burst_region(
 
     Two properties matter more than accuracy:
 
-    * **The edge error is bounded and one-sided.** A block counts as burst when
-      its mean power clears the threshold, so a block holding even a little
-      burst is included. The estimate therefore lands at most one block *early*
-      and up to one block *late* -- and late is the safe direction (see
-      ``BURST_FRAME_SLACK_BITS``).
+    * **The edge error is a couple of windows, and it is NOT one-sided.** A block
+      counts as burst when its mean power clears the threshold, so when the block
+      holding the true edge is mostly noise it can miss the threshold and the
+      estimate stops *short*. The shortfall is then exactly the offset of the
+      true edge inside that block, which is also the number of burst samples the
+      block holds -- so early error is *self-limiting*: a block only misses when
+      it is mostly noise, and a mostly-noise block has a small offset. Late is
+      the looser direction, because near ``min_snr_db`` the threshold sits high
+      enough that noise blocks past the edge clear it too and extend the run.
+      Measured over 1577 found regions (noise amplitudes 0.02-0.5, burst lengths
+      256-3000, every boundary offset 1..64): worst early -21 samples and worst
+      late +163, against a 64-sample window. Both directions are absorbed
+      downstream by ``BURST_FRAME_SLACK_BITS`` and the CRC anchor -- see the
+      end-to-end result in ``tests/integration/test_burst_in_noise.py``.
     * **A wrong region can only cost a decode, never fake one.** This narrows a
       search; the CRC-16 still decides. A capture with no burst (a continuous
       signal, or one that fills the capture) reports ``found=False`` and the

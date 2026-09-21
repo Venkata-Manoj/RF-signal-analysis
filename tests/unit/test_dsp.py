@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from rf_analyzer.config import BURST_ENVELOPE_WINDOW
 from rf_analyzer.core.dsp import (
     compute_psd,
     estimate_bandwidth,
@@ -226,23 +227,34 @@ def test_fsk_period_declines_on_constant_signal():
 # --------------------------------------------------------------------------- #
 
 
-def _burst_in_noise(pad: int = 800, core_len: int = 2_000, seed: int = 7):
-    """``noise | burst | noise`` with a constant-envelope burst."""
+def _burst_in_noise(
+    pad: int = 800, core_len: int = 2_000, seed: int = 7, amp: float = 0.05
+):
+    """``noise | burst | noise`` with a constant-envelope burst.
+
+    ``amp`` is the per-component noise standard deviation, so the burst-to-noise
+    separation is ``10*log10(1 / (2*amp**2))``: 23 dB at the 0.05 default, and
+    ~6 dB at 0.35, which is ``BURST_MIN_SNR_DB`` and the regime where the
+    estimator starts to struggle.
+    """
     rng = np.random.default_rng(seed)
     core = np.ones(core_len, dtype=np.complex64)
-    lead = (rng.standard_normal(pad) + 1j * rng.standard_normal(pad)) * 0.05
-    trail = (rng.standard_normal(pad) + 1j * rng.standard_normal(pad)) * 0.05
+    lead = (rng.standard_normal(pad) + 1j * rng.standard_normal(pad)) * amp
+    trail = (rng.standard_normal(pad) + 1j * rng.standard_normal(pad)) * amp
     return np.concatenate([lead, core, trail]).astype(np.complex64), pad + core_len
 
 
-def test_burst_region_finds_the_burst_and_never_lands_early():
-    """The edge error must be one-sided: late is safe, early is not.
+def test_burst_region_finds_the_burst_within_a_window_of_the_true_edge():
+    """At a healthy separation the edge lands late, inside one window.
 
-    A block counts as burst when its mean power clears the threshold, so a block
-    holding even a little burst is included. That makes the estimate land at most
-    one block early and up to one block late -- and late is the direction the
-    decoder can absorb, because appending bits leaves the earlier
-    de-interleaver blocks intact while truncating corrupts the last one.
+    This burst sits ~23 dB above its noise, which is the easy regime: the
+    threshold lands near the *noise* floor, so a boundary block holding even a
+    few burst samples clears it and the estimate runs long by at most one window.
+
+    Do not read this as the general property. The estimate is *not* one-sided --
+    at lower separations a mostly-noise boundary block misses the threshold and
+    the estimate stops short. ``test_burst_region_edge_error_stays_within_three_windows``
+    pins the bound that actually holds across separations.
     """
     samples, true_end = _burst_in_noise(pad=800)
     res = estimate_burst_region(samples)
@@ -254,12 +266,40 @@ def test_burst_region_finds_the_burst_and_never_lands_early():
     assert true_end <= res["end_sample"] <= true_end + res["window"]
 
 
-@pytest.mark.parametrize("pad", [200, 400, 800, 1_600, 4_000])
-def test_burst_region_edge_error_is_bounded_by_one_window(pad):
-    samples, true_end = _burst_in_noise(pad=pad)
-    res = estimate_burst_region(samples)
-    assert res["found"] is True
-    assert true_end <= res["end_sample"] <= true_end + res["window"]
+@pytest.mark.parametrize("amp", [0.05, 0.2, 0.35])
+def test_burst_region_edge_error_stays_within_three_windows(amp):
+    """The edge error must stay bounded in *both* directions.
+
+    Early is the tight direction and it is self-limiting: a block misses the
+    threshold only when it is mostly noise, and the shortfall is then exactly the
+    offset of the true edge inside that block -- so a mostly-noise block, the
+    only kind that can miss, produces a *small* error. Late is the looser
+    direction, because near ``BURST_MIN_SNR_DB`` the threshold sits high enough
+    that noise blocks past the edge clear it too.
+
+    Sweeping every boundary offset is what makes this meaningful: the error is
+    a function of where the true edge falls inside a block, so a single padding
+    value samples exactly one offset and can miss the worst case entirely. The
+    bound is deliberately loose (three windows) -- the failure this forbids is an
+    error that grows with the capture, which would make the hint useless.
+    """
+    worst = 0
+    worst_offset = None
+    for offset in range(1, 65):
+        samples, true_end = _burst_in_noise(pad=1_024 + offset, amp=amp)
+        res = estimate_burst_region(samples)
+        if not res["found"]:
+            continue  # declining is the honest answer near the noise floor
+        err = abs(res["end_sample"] - true_end)
+        if err > worst:
+            worst, worst_offset = err, offset
+
+    assert worst_offset is not None, "no offset produced a region to measure"
+    assert worst <= 3 * BURST_ENVELOPE_WINDOW, (
+        f"edge error grew to {worst} samples "
+        f"({worst / BURST_ENVELOPE_WINDOW:.2f} windows) at offset {worst_offset}; "
+        "the frame-length hint is only useful while the error stays small"
+    )
 
 
 def test_burst_region_declines_on_a_capture_that_is_all_signal():

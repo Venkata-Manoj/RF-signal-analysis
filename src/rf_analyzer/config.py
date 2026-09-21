@@ -24,9 +24,15 @@ PAYLOAD_PREVIEW_BYTES = 256
 # `frame_bits` is what lets a burst-in-noise capture decode.
 #
 #: Envelope resolution, in samples: the capture is averaged into blocks of this
-#: size before thresholding. It also bounds how far the estimated edge can sit
-#: from the truth (measured: at most one block early, up to one block late), so
-#: it must stay well inside the CRC search window (32 bytes).
+#: size before thresholding, and it is also the scale of the estimate's edge
+#: error. Measured over 1577 found regions: worst early 21 samples (a third of a
+#: window, and self-limiting -- a block only misses the threshold when it is
+#: mostly noise, so the shortfall is small), worst late 163 samples (~2.5
+#: windows, because near BURST_MIN_SNR_DB noise blocks past the edge clear the
+#: threshold too). Keep it small relative to the frame: the error in *bits* is
+#: this window divided by the modulation's samples per bit, which is 1 for BPSK
+#: but 0.25 for 16-QAM, so a wide window costs the most margin at dense
+#: constellations.
 BURST_ENVELOPE_WINDOW = 64
 #: Minimum burst-to-floor power ratio for a region to count as a burst. Below
 #: this there is no burst to find and the estimate is reported as unavailable,
@@ -35,8 +41,14 @@ BURST_MIN_SNR_DB = 6.0
 #: Bits added to the estimated coded-region length. The estimate is biased *long*
 #: on purpose, because the two directions are not symmetric: appending bits
 #: leaves every earlier de-interleaver block intact, while truncating below the
-#: true frame end corrupts the last block and destroys the CRC. The CRC search
-#: window tolerates up to 32 bytes of excess, so this stays far inside it.
+#: true frame end puts the frame end outside the CRC anchor's reach and the frame
+#: is lost. This slack is denominated in *bits* while the edge error is in
+#: *samples*, and the conversion is the modulation's samples per bit -- 1 for
+#: BPSK, 0.5 for QPSK, 0.25 for 16-QAM -- so read it as a bit budget on top of
+#: the estimate, never as a sample budget. 128 bits covers the worst measured
+#: early error at every rate tested (16-QAM, 11 samples = 44 bits), and the
+#: margin shrinks as samples per bit falls. The CRC search window tolerates up to
+#: 32 bytes of excess, so this stays inside it.
 BURST_FRAME_SLACK_BITS = 128
 
 # Constellation-fit cross-check for the modulation estimate.
