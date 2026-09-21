@@ -383,13 +383,18 @@ It covers, among others:
 Other useful commands:
 
 ```powershell
-pytest                                        # the full suite (462 tests)
+pytest                                        # the full suite (463 tests)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
 python scripts/measure_fec_capability.py      # re-derive the FEC tolerance numbers below
 python scripts/benchmark_performance.py       # re-derive the timings in "Performance"
 $env:QT_QPA_PLATFORM="offscreen"; pytest tests/integration -q   # GUI tests, headless
 ```
+
+`pytest` reports **462 passed, 1 skipped**. The skip is deliberate and it says so itself:
+one parametrisation of "the raw payload must never masquerade as the decoded message" is
+the no-coding case, where the raw payload genuinely *is* the message, so the test's premise
+does not apply. Run `pytest -rs` to see skips named rather than counted.
 
 ---
 
@@ -444,7 +449,7 @@ src/rf_analyzer/
   gui/main_window.py   the PyQt6 desktop app
 scripts/               run_app, run_pipeline, serve_dashboard, batch_analyze,
                        generate_test_data, fetch_real_data, verify_mvp, benchmark_snr
-tests/                 366 tests: unit + integration (incl. headless GUI)
+tests/                 463 tests: unit + integration (incl. headless GUI)
 sample_data/           generated synthetic captures (gitignored)
 real_data/             downloaded real captures (gitignored)
 output/                reports, bitstreams and decoded payloads (gitignored)
