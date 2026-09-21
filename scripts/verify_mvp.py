@@ -53,8 +53,10 @@ class Checks:
 
     def __init__(self) -> None:
         self.ok = True
+        self.total = 0
 
     def check(self, name: str, passed: bool, detail: str = "") -> None:
+        self.total += 1
         status = "OK" if passed else "FAIL"
         suffix = f": {detail}" if detail else ""
         print(f"  [{status}] {name}{suffix}")
@@ -678,10 +680,15 @@ def main() -> int:
 
     print("[5/5] Result")
     if checks.ok:
+        # Report the count so the number quoted in the docs is machine-checked
+        # rather than hand-maintained: an unverified "N checks" in a README is
+        # the same class of claim this project refuses to make about signals.
+        print(f"{checks.total} individual checks passed.")
         print("MVP verification complete.")
         print("PASS")
         return 0
 
+    print(f"{checks.total} individual checks run, at least one failed.")
     print("MVP verification complete.")
     print("FAIL")
     return 1
