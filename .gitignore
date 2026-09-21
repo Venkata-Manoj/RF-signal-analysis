@@ -22,3 +22,6 @@ real_data/*
 
 # Agent working memory / scratch for this project (not source).
 .workbuddy-ai/
+
+# Presentation + documentation deliverables: presentation material only, not source.
+deliverables/
