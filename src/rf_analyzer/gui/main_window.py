@@ -3,8 +3,9 @@
 Layout per info.md §6:
   Menu Bar: File | Analysis | Export | Help
   Left panel: file open, params, run/export
-  Center: Time | Spectrum | Waterfall | Constellation | Eye | Bitstream
-  Right panel: results table + log console
+  Center: Time | Spectrum | Waterfall | Constellation | Eye | Bitstream |
+          Payload | Hypotheses
+  Right panel: results table (whole report) + log console
 
 Design tokens (ui-ux-pro-max skill, "Desktop Analytics" / Dark OLED):
   background #020617, primary #0F172A, secondary #1E293B, card #0E1223,
@@ -30,7 +31,7 @@ import numpy as np
 try:
     import pyqtgraph as pg
     from PyQt6.QtCore import Qt
-    from PyQt6.QtGui import QAction
+    from PyQt6.QtGui import QAction, QFont
     from PyQt6.QtWidgets import (
         QCheckBox,
         QComboBox,
@@ -147,6 +148,44 @@ def _decimate(arr: np.ndarray, max_pts: int = DISPLAY_MAX_POINTS) -> np.ndarray:
         return arr
     step = int(arr.size // max_pts) + 1
     return arr[::step]
+
+
+def _decimation_step(size: int, max_pts: int = DISPLAY_MAX_POINTS) -> int:
+    """Stride that :func:`_decimate` would use, so display indices can be mapped.
+
+    Kept next to ``_decimate`` and derived from the same expression: a burst
+    marker placed with a different stride would silently point at the wrong
+    samples, which is worse than not drawing it.
+    """
+    size = int(size)
+    if size <= max_pts or max_pts <= 0:
+        return 1
+    return int(size // max_pts) + 1
+
+
+def _fmt_value(value: object) -> str:
+    """Render one report value for the results table.
+
+    ``None`` becomes an em dash on purpose: the pipeline uses ``None`` for
+    "not measured" and a real ``0`` for "measured as zero" (an uncoded capture
+    really does have an EVM of 0.0%). Rendering both as ``0`` would let an
+    absent measurement read as a perfect one.
+    """
+    if value is None:
+        return "—"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    if isinstance(value, dict):
+        if not value:
+            return "—"
+        return ", ".join(f"{k}={_fmt_value(v)}" for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "—"
+        return ", ".join(_fmt_value(v) for v in value)
+    return str(value)
 
 
 def _notify(parent, kind: str, title: str, text: str) -> None:
@@ -507,6 +546,77 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         payload_layout.addWidget(payload_split, stretch=1)
         self.payload_tab = payload_tab
         self.tabs.addTab(payload_tab, "Payload")
+
+        # ---- Hypotheses tab: the ranked candidates behind the answer ----
+        # The pipeline scores several FEC and interleaver hypotheses before it
+        # commits to one. The results table shows only the winner, so the
+        # runners-up are surfaced here rather than discarded.
+        hyp_tab = QWidget()
+        hyp_layout = QVBoxLayout(hyp_tab)
+        hyp_layout.setContentsMargins(6, 6, 6, 6)
+        hyp_layout.setSpacing(6)
+
+        self.hypotheses_intro = QLabel(
+            "Ranked candidates considered by the classifier. These scores are "
+            "the pre-decode ranking; once a decode is validated its own "
+            "confidence is reported in the results table."
+        )
+        self.hypotheses_intro.setObjectName("hypotheses_intro")
+        self.hypotheses_intro.setWordWrap(True)
+        hyp_layout.addWidget(self.hypotheses_intro)
+
+        self.decode_search_label = QLabel("Decode search: — (no run yet)")
+        self.decode_search_label.setObjectName("decode_search_label")
+        self.decode_search_label.setWordWrap(True)
+        hyp_layout.addWidget(self.decode_search_label)
+
+        fec_group = QGroupBox("FEC hypotheses (ranked)")
+        fec_group_layout = QVBoxLayout(fec_group)
+        self.fec_candidates_table = QTableWidget(0, 3)
+        self.fec_candidates_table.setObjectName("fec_candidates_table")
+        self.fec_candidates_table.setHorizontalHeaderLabels(
+            ["Candidate", "Confidence", "CRC pass"]
+        )
+        self.fec_candidates_table.horizontalHeader().setStretchLastSection(True)
+        self.fec_candidates_table.verticalHeader().setVisible(False)
+        self.fec_candidates_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        fec_group_layout.addWidget(self.fec_candidates_table)
+        hyp_layout.addWidget(fec_group, stretch=1)
+
+        ilv_group = QGroupBox("Interleaver hypotheses (ranked)")
+        ilv_group_layout = QVBoxLayout(ilv_group)
+        self.ilv_candidates_table = QTableWidget(0, 3)
+        self.ilv_candidates_table.setObjectName("ilv_candidates_table")
+        self.ilv_candidates_table.setHorizontalHeaderLabels(
+            ["Candidate", "Depth", "Confidence"]
+        )
+        self.ilv_candidates_table.horizontalHeader().setStretchLastSection(True)
+        self.ilv_candidates_table.verticalHeader().setVisible(False)
+        self.ilv_candidates_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        ilv_group_layout.addWidget(self.ilv_candidates_table)
+        hyp_layout.addWidget(ilv_group, stretch=1)
+
+        qual_group = QGroupBox("Modulation fit (ranked by EVM)")
+        qual_group_layout = QVBoxLayout(qual_group)
+        self.qual_candidates_table = QTableWidget(0, 3)
+        self.qual_candidates_table.setObjectName("qual_candidates_table")
+        self.qual_candidates_table.setHorizontalHeaderLabels(
+            ["Mode", "Order", "EVM (%)"]
+        )
+        self.qual_candidates_table.horizontalHeader().setStretchLastSection(True)
+        self.qual_candidates_table.verticalHeader().setVisible(False)
+        self.qual_candidates_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        qual_group_layout.addWidget(self.qual_candidates_table)
+        hyp_layout.addWidget(qual_group, stretch=1)
+
+        self.hypotheses_tab = hyp_tab
+        self.tabs.addTab(hyp_tab, "Hypotheses")
 
         # ---- Right results panel ----
         right = QWidget()
@@ -909,6 +1019,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     f"corr_offset={corr.get('header_offset')} score={corr.get('score')}"
                 )
                 self._log_payload_summary(report)
+                self._log_detection_summary(report)
             self._update_results_table(report)
             self._update_plots(report)
         except Exception as exc:
@@ -1055,52 +1166,116 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             return None, None
 
     def _update_results_table(self, report: dict) -> None:
+        """Render every block of the pipeline report.
+
+        The pipeline grew well past what this table used to show, so each block
+        it returns now has a section here: burst detection, the classifier's
+        alternatives and corroboration, the EVM/MER quality block, the FEC and
+        interleaver parameters, and the sync-search detail. Section headings
+        are rows whose key starts with ``"-- "`` and span both columns, so a
+        parameter lookup by exact name (``_table_value`` in the tests) can
+        never collide with one.
+        """
         rows: list[tuple[str, str]] = []
         try:
-            inp = report.get("input", {})
-            sig = report.get("signal", {})
-            mod = report.get("modulation", {})
-            dem = report.get("demodulation", {})
-            corr = report.get("correlation", {})
-            fec = report.get("fec", {})
-            ilv = report.get("interleaving", {})
+            inp = report.get("input", {}) or {}
+            sig = report.get("signal", {}) or {}
+            burst = sig.get("burst", {}) or {}
+            mod = report.get("modulation", {}) or {}
+            qual = report.get("quality", {}) or {}
+            dem = report.get("demodulation", {}) or {}
+            corr = report.get("correlation", {}) or {}
             pay = report.get("payload", {}) or {}
             dec = pay.get("decoded", {}) or {}
             search = pay.get("decode_search", {}) or {}
+            raw = pay.get("raw", {}) or {}
+            fec = report.get("fec", {}) or {}
+            ilv = report.get("interleaving", {}) or {}
+            disp = report.get("display", {}) or {}
+
+            if burst.get("found") and burst.get("start_sample") is not None:
+                burst_span = f"{burst.get('start_sample')}-{burst.get('end_sample')}"
+            else:
+                burst_span = "—"
+
             rows = [
+                ("-- INPUT --", ""),
                 ("File", str(inp.get("file_name", ""))),
                 ("File type", str(inp.get("file_type", ""))),
                 ("Sample rate", str(inp.get("sample_rate", ""))),
                 ("IQ format used", str(inp.get("iq_format_used", ""))),
+                ("Center freq (set)", _fmt_value(inp.get("center_frequency"))),
+                ("-- SIGNAL --", ""),
                 ("Samples", str(sig.get("num_samples", ""))),
                 ("Duration (s)", str(sig.get("duration_seconds", ""))),
                 ("Center freq est", str(sig.get("center_frequency_estimate", ""))),
                 ("Bandwidth est", str(sig.get("bandwidth_estimate", ""))),
                 ("SNR (dB)", str(sig.get("snr_db", ""))),
+                ("Sample rate est", _fmt_value(sig.get("sample_rate_estimate"))),
                 ("Symbol rate est", str(sig.get("symbol_rate_estimate", ""))),
                 ("CFO est (Hz)", str(sig.get("cfo_estimate_hz", ""))),
+                ("-- BURST DETECTION --", ""),
+                ("Burst found", "yes" if burst.get("found") else "no"),
+                ("Burst span", burst_span),
+                ("Burst level (dB)", _fmt_value(burst.get("burst_level_db"))),
+                ("Burst noise floor (dB)", _fmt_value(burst.get("noise_floor_db"))),
+                ("Burst threshold (dB)", _fmt_value(burst.get("threshold_db"))),
+                ("Burst SNR (dB)", _fmt_value(burst.get("snr_db"))),
+                ("Burst window", _fmt_value(burst.get("window"))),
+                ("Burst method", _fmt_value(burst.get("method"))),
+                ("Burst note", _fmt_value(burst.get("reason"))),
+                ("-- MODULATION --", ""),
                 ("Modulation", str(mod.get("estimated_type", ""))),
                 ("Mod confidence", str(mod.get("confidence", ""))),
+                ("Mod alternatives", _fmt_value(mod.get("alternatives"))),
+                ("Mod corroborated", _fmt_value(mod.get("corroborated"))),
+                ("Mod revised from", _fmt_value(mod.get("revised_from"))),
+                ("-- QUALITY (EVM / MER) --", ""),
+                ("Quality applies", "yes" if qual.get("applicable") else "no"),
+                ("Quality mode", _fmt_value(qual.get("mode"))),
+                ("EVM (%)", _fmt_value(qual.get("evm_percent"))),
+                ("MER (dB)", _fmt_value(qual.get("mer_db"))),
+                ("SNR from EVM (dB)", _fmt_value(qual.get("snr_db_from_evm"))),
+                ("Modulation order", _fmt_value(qual.get("modulation_order"))),
+                ("Quality symbols", _fmt_value(qual.get("n_symbols"))),
+                ("Fit ok", _fmt_value(qual.get("fit_ok"))),
+                ("-- DEMODULATION --", ""),
                 ("Demod mode", str(dem.get("mode", ""))),
                 ("Num bits", str(dem.get("num_bits", ""))),
+                ("Display mode", _fmt_value(disp.get("mode"))),
+                ("Samples per symbol", _fmt_value(disp.get("samples_per_symbol"))),
+                ("Bitstream file", _fmt_value(dem.get("bitstream_file"))),
+                ("-- CORRELATION --", ""),
                 ("Sync word", str(corr.get("sync_word", ""))),
+                ("Sync detected", _fmt_value(corr.get("detected"))),
+                ("Sync assumed", _fmt_value(corr.get("assumed"))),
+                ("Sync length (bits)", _fmt_value(corr.get("sync_length"))),
                 ("Header offset", str(corr.get("header_offset", ""))),
                 ("Corr score", str(corr.get("score", ""))),
+                ("Corr min score", _fmt_value(corr.get("min_score"))),
+                ("Corr min matches", _fmt_value(corr.get("min_matches"))),
+                ("Positions searched", _fmt_value(corr.get("positions_searched"))),
+                ("-- PAYLOAD --", ""),
                 ("Payload bits", str(pay.get("payload_bits", ""))),
-                (
-                    "Payload bytes (raw)",
-                    str((pay.get("raw", {}) or {}).get("bytes", "")),
-                ),
+                ("Payload bit offset", _fmt_value(pay.get("payload_bit_offset"))),
+                ("Payload bytes (raw)", str(raw.get("bytes", ""))),
                 (
                     "Decode search",
                     f"{search.get('attempts', 0)} tried"
                     + (" (budget hit)" if search.get("budget_exhausted") else ""),
                 ),
+                ("-- FEC --", ""),
                 ("FEC candidate", str(fec.get("candidate", ""))),
                 ("FEC confidence", str(fec.get("confidence", ""))),
                 ("FEC verified", "yes" if fec.get("validated") else "no"),
+                ("FEC CRC pass", _fmt_value(fec.get("crc_pass"))),
+                ("FEC errors corrected", _fmt_value(fec.get("errors_corrected"))),
+                ("FEC params", _fmt_value(fec.get("params"))),
+                ("-- INTERLEAVING --", ""),
                 ("Interleaver", str(ilv.get("candidate", ""))),
                 ("Interleaver verified", "yes" if ilv.get("validated") else "no"),
+                ("Interleaver depth", _fmt_value(ilv.get("depth"))),
+                ("-- RESULT --", ""),
                 (
                     "Recovered message",
                     (
@@ -1109,16 +1284,32 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                         else "none"
                     ),
                 ),
+                ("-- DIAGNOSTICS --", ""),
                 ("Warnings", "; ".join(map(str, report.get("warnings", []) or []))),
                 ("Errors", "; ".join(map(str, report.get("errors", []) or []))),
             ]
         except Exception as exc:
             rows = [("Error", f"Could not format report: {exc}")]
-        self.results_table.setRowCount(len(rows))
-        for i, (k, v) in enumerate(rows):
-            self.results_table.setItem(i, 0, QTableWidgetItem(k))
-            self.results_table.setItem(i, 1, QTableWidgetItem(v))
-        self.results_table.resizeColumnsToContents()
+
+        table = self.results_table
+        table.clearSpans()
+        table.setRowCount(len(rows))
+        try:
+            section_font = QFont()
+            section_font.setBold(True)
+        except Exception:
+            section_font = None
+        for i, (key, value) in enumerate(rows):
+            key_item = QTableWidgetItem(key)
+            if key.startswith("-- "):
+                if section_font is not None:
+                    key_item.setFont(section_font)
+                table.setItem(i, 0, key_item)
+                table.setSpan(i, 0, 1, 2)
+                continue
+            table.setItem(i, 0, key_item)
+            table.setItem(i, 1, QTableWidgetItem(value))
+        table.resizeColumnsToContents()
 
     # ------------------------------------------------------------------ #
     # Demo / batch helpers
@@ -1274,6 +1465,49 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         except Exception as exc:
             self.log(f"WARN: could not summarise payload: {exc}")
 
+    def _log_detection_summary(self, report: dict) -> None:
+        """Log the burst and quality blocks, the way the table now carries them.
+
+        Both say "not measured" out loud rather than staying silent: a silent
+        log reads as "nothing to report", which is the wrong story when the
+        pipeline tried and declined.
+        """
+        try:
+            burst = ((report or {}).get("signal", {}) or {}).get("burst", {}) or {}
+            if burst:
+                if burst.get("found"):
+                    self.log(
+                        "Burst: detected at samples "
+                        f"{burst.get('start_sample')}-{burst.get('end_sample')} "
+                        f"(level {_fmt_value(burst.get('burst_level_db'))} dB vs "
+                        f"floor {_fmt_value(burst.get('noise_floor_db'))} dB, "
+                        f"SNR {_fmt_value(burst.get('snr_db'))} dB, "
+                        f"method {burst.get('method')})."
+                    )
+                else:
+                    self.log(
+                        f"Burst: none found — "
+                        f"{burst.get('reason') or 'no reason given'} "
+                        f"(method {burst.get('method')})."
+                    )
+            qual = (report or {}).get("quality", {}) or {}
+            if qual.get("applicable") and qual.get("evm_percent") is not None:
+                mer = qual.get("mer_db")
+                self.log(
+                    f"Quality: EVM {qual.get('evm_percent'):.3g}%"
+                    + (f", MER {mer:.4g} dB" if mer is not None else "")
+                    + f" over {qual.get('n_symbols')} symbols "
+                    f"(order {qual.get('modulation_order')}, "
+                    f"fit_ok={_fmt_value(qual.get('fit_ok'))})."
+                )
+            elif qual:
+                self.log(
+                    "Quality: EVM/MER not applicable to "
+                    f"{qual.get('mode') or 'this modulation'}."
+                )
+        except Exception as exc:
+            self.log(f"WARN: could not summarise detection: {exc}")
+
     def _set_payload_badge(self, text: str, verified: bool) -> None:
         """Set the payload status badge and re-polish so the QSS property applies."""
         try:
@@ -1398,10 +1632,90 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         ]
         self.payload_raw_text.setPlainText("\n".join(raw_body))
 
+    @staticmethod
+    def _fill_candidate_table(table, candidates, columns: list[str]) -> None:
+        """Fill a candidate table from a ranked hypothesis list.
+
+        Rebuilt from scratch each run, so a short new list never leaves the
+        previous report's longer tail on screen.
+        """
+        try:
+            items = list(candidates or [])
+        except Exception:
+            items = []
+        table.setRowCount(len(items))
+        for row, entry in enumerate(items):
+            cand = entry if isinstance(entry, dict) else {"candidate": entry}
+            for col, key in enumerate(columns):
+                table.setItem(row, col, QTableWidgetItem(_fmt_value(cand.get(key))))
+        table.resizeColumnsToContents()
+
+    def _update_hypotheses_tab(self, report: dict) -> None:
+        """Render the ranked FEC / interleaver candidates and the decode search.
+
+        The results table can only show the winning hypothesis; this tab shows
+        what it was chosen from. The scores are the classifier's pre-decode
+        ranking, so the winner here can carry a lower score than the validated
+        decode's own confidence — the intro text says so, because otherwise
+        that looks like a contradiction.
+        """
+        report = report or {}
+        search = (report.get("payload") or {}).get("decode_search") or {}
+        fec = report.get("fec") or {}
+        ilv = report.get("interleaving") or {}
+
+        if not search.get("enabled", True):
+            self.decode_search_label.setText(
+                "Decode search: off — tick 'Verify FEC + decode payload' to rank "
+                "hypotheses."
+            )
+        else:
+            self.decode_search_label.setText(
+                f"Decode search: {search.get('attempts', 0)} hypotheses tried"
+                + (" · time budget reached" if search.get("budget_exhausted") else "")
+                + (" · validated" if search.get("validated") else " · no CRC match")
+                # "top-ranked", not "winner": without a CRC pass nothing was
+                # won, and the highest-scoring hypothesis is not a result.
+                + f" · top-ranked: {fec.get('candidate') or '—'}"
+            )
+
+        self._fill_candidate_table(
+            self.fec_candidates_table,
+            fec.get("candidates"),
+            ["candidate", "confidence", "crc_pass"],
+        )
+        self._fill_candidate_table(
+            self.ilv_candidates_table,
+            ilv.get("candidates"),
+            ["candidate", "depth", "confidence"],
+        )
+        qual = report.get("quality") or {}
+        self._fill_candidate_table(
+            self.qual_candidates_table,
+            qual.get("candidates"),
+            ["mode", "modulation_order", "evm_percent"],
+        )
+        # Mark the hypothesis the pipeline actually committed to, so the
+        # ranking and the decision are readable in one glance.
+        try:
+            winner = fec.get("candidate")
+            for row in range(self.fec_candidates_table.rowCount()):
+                item = self.fec_candidates_table.item(row, 0)
+                if item is not None and winner and item.text() == str(winner):
+                    font = item.font()
+                    font.setBold(True)
+                    for col in range(self.fec_candidates_table.columnCount()):
+                        cell = self.fec_candidates_table.item(row, col)
+                        if cell is not None:
+                            cell.setFont(font)
+        except Exception:
+            pass
+
     def _update_plots(self, report: dict) -> None:
         # The payload view is derived purely from the report, so refresh it
         # first — it must still populate when samples are unavailable.
         self._update_payload_tab(report)
+        self._update_hypotheses_tab(report)
         samples, rate = self._load_display_samples()
         if samples is None or len(samples) == 0:
             self.log("WARN: no samples available for plots; showing report only.")
@@ -1411,10 +1725,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             rate = float(self.sample_rate_spin.value() or 1.0)
         try:
             # Every plot starts with .clear()/setImage so runs never overlay.
-            self._plot_time(samples)
+            burst = ((report or {}).get("signal", {}) or {}).get("burst", {}) or {}
+            quality = (report or {}).get("quality", {}) or {}
+            self._plot_time(samples, burst=burst)
             self._plot_spectrum(samples, rate)
             self._plot_waterfall(samples, rate)
-            self._plot_constellation(samples)
+            self._plot_constellation(samples, quality=quality)
             # Eye overlay depends on symbol density: prefer pipeline hint
             # report["display"]["samples_per_symbol"], else demod mode.
             try:
@@ -1433,8 +1749,15 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.log(f"WARN: plot update partially failed: {exc}")
 
     # ---- individual plots (display only) ---- #
-    def _plot_time(self, samples: np.ndarray) -> None:
+    def _plot_time(self, samples: np.ndarray, burst: dict | None = None) -> None:
+        """Time-domain view, with the detected burst span shaded when there is one.
+
+        The span is mapped through the same stride ``_decimate`` used, so the
+        shaded region lines up with the decimated trace instead of pointing at
+        original-index positions in display space.
+        """
         self.time_plot.clear()
+        self.time_plot.setTitle("Time domain")
         view = _decimate(samples, DISPLAY_MAX_POINTS)
         x = np.arange(view.size)
         self.time_plot.plot(
@@ -1443,6 +1766,26 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.time_plot.plot(
             x, np.imag(view).astype(float), pen=pg.mkPen("#38BDF8", width=1), name="Q"
         )
+        try:
+            info = burst or {}
+            if info.get("found") and info.get("start_sample") is not None:
+                step = _decimation_step(np.asarray(samples).size, DISPLAY_MAX_POINTS)
+                region = pg.LinearRegionItem(
+                    values=(
+                        float(info.get("start_sample", 0)) / step,
+                        float(info.get("end_sample", 0)) / step,
+                    ),
+                    movable=False,
+                    brush=pg.mkBrush(234, 88, 12, 40),
+                    pen=pg.mkPen(234, 88, 12, 170),
+                )
+                self.time_plot.addItem(region)
+                self.time_plot.setTitle(
+                    "Time domain — burst "
+                    f"[{info.get('start_sample')}-{info.get('end_sample')} samples]"
+                )
+        except Exception as exc:
+            self.log(f"WARN: could not shade the burst region: {exc}")
 
     def _plot_spectrum(self, samples: np.ndarray, rate: float) -> None:
         self.spectrum_plot.clear()
@@ -1497,7 +1840,16 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         except Exception as exc:
             self.log(f"WARN: waterfall failed: {exc}")
 
-    def _plot_constellation(self, samples: np.ndarray) -> None:
+    def _plot_constellation(
+        self, samples: np.ndarray, quality: dict | None = None
+    ) -> None:
+        """I/Q scatter, annotated with the pipeline's measured EVM/MER.
+
+        The annotation only repeats what the pipeline computed; no ideal
+        reference points are drawn over the scatter. The displayed samples are
+        raw (not the pipeline's symbol decisions), so overlaying an ideal grid
+        would imply an agreement the GUI cannot actually demonstrate.
+        """
         self.const_plot.clear()
         view = _decimate(samples, 10_000)  # scatter stays fast
         self.const_plot.plot(
@@ -1508,6 +1860,26 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             symbolSize=3,
             symbolBrush=(34, 197, 94, 160),
         )
+        try:
+            qual = quality or {}
+            mode = qual.get("mode")
+            evm = qual.get("evm_percent")
+            mer = qual.get("mer_db")
+            if qual.get("applicable") and evm is not None:
+                title = f"Constellation (I vs Q) — {mode}, EVM {evm:.3g}%"
+                if mer is not None:
+                    title += f", MER {mer:.4g} dB"
+                if qual.get("fit_ok") is False:
+                    title += " (fit poor — burst likely padded with noise)"
+                self.const_plot.setTitle(title)
+            elif mode:
+                self.const_plot.setTitle(
+                    f"Constellation (I vs Q) — {mode}; EVM/MER not applicable"
+                )
+            else:
+                self.const_plot.setTitle("Constellation (I vs Q)")
+        except Exception:
+            self.const_plot.setTitle("Constellation (I vs Q)")
 
     def _plot_eye(self, samples: np.ndarray, samples_per_symbol: int = 8) -> None:
         self.eye_plot.clear()
@@ -1585,9 +1957,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             preview = "".join(
                 map(str, np.asarray(self.last_bits[:256], dtype=int).tolist())
             )
-            self.bitstream_text.setPlainText(
-                f"{nbits} bits (first {min(256, len(self.last_bits))} shown):\n{preview}"
-            )
+            header = f"{nbits} bits (first {min(256, len(self.last_bits))} shown):"
+            bitfile = dem.get("bitstream_file")
+            if bitfile:
+                # The pipeline writes the full stream next to its output; the
+                # preview above is truncated, so say where the rest went.
+                header += f"\nfull bitstream written to: {bitfile}"
+            self.bitstream_text.setPlainText(f"{header}\n{preview}")
         else:
             # Honest empty state: never synthesize a fake wave with
             # fixed-seed random. Counts/mode come from the pipeline report.

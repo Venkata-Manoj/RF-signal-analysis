@@ -73,10 +73,15 @@ python scripts/generate_test_data.py
 python scripts/run_app.py
 ```
 
-The window opens with seven tabs — **Time, Spectrum, Waterfall, Constellation, Eye,
-Bitstream, Payload**. Use **Open Demo Capture** for a bundled signal, or **File → Open** for
-your own `.iq`/`.wav`. Set the sample rate if you are using a raw `.iq` file (see
-[Supported files](#supported-files-and-schemes)), then press **Run analysis**.
+The window opens with eight tabs — **Time, Spectrum, Waterfall, Constellation, Eye,
+Bitstream, Payload, Hypotheses**. Use **Open Demo Capture** for a bundled signal, or
+**File → Open** for your own `.iq`/`.wav`. Set the sample rate if you are using a raw `.iq`
+file (see [Supported files](#supported-files-and-schemes)), then press **Run analysis**.
+
+The right-hand table is the full report, grouped by block: input, signal, burst detection,
+modulation, EVM/MER quality, demodulation, correlation, payload, FEC, interleaving and
+diagnostics. The **Hypotheses** tab holds what the results table can only summarise — the
+ranked FEC, interleaver and modulation-fit candidates the classifier chose between.
 
 Don't want to open a window? `python scripts/serve_dashboard.py --open` gives you the same
 analysis in a browser instead. It is an extra, not a substitute for the desktop app — both
@@ -383,7 +388,7 @@ It covers, among others:
 Other useful commands:
 
 ```powershell
-pytest                                        # the full suite (463 tests)
+pytest                                        # the full suite (474 tests)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
 python scripts/measure_fec_capability.py      # re-derive the FEC tolerance numbers below
@@ -391,7 +396,7 @@ python scripts/benchmark_performance.py       # re-derive the timings in "Perfor
 $env:QT_QPA_PLATFORM="offscreen"; pytest tests/integration -q   # GUI tests, headless
 ```
 
-`pytest` reports **462 passed, 1 skipped**. The skip is deliberate and it says so itself:
+`pytest` reports **473 passed, 1 skipped**. The skip is deliberate and it says so itself:
 one parametrisation of "the raw payload must never masquerade as the decoded message" is
 the no-coding case, where the raw payload genuinely *is* the message, so the test's premise
 does not apply. Run `pytest -rs` to see skips named rather than counted.
@@ -449,7 +454,7 @@ src/rf_analyzer/
   gui/main_window.py   the PyQt6 desktop app
 scripts/               run_app, run_pipeline, serve_dashboard, batch_analyze,
                        generate_test_data, fetch_real_data, verify_mvp, benchmark_snr
-tests/                 463 tests: unit + integration (incl. headless GUI)
+tests/                 474 tests: unit + integration (incl. headless GUI)
 sample_data/           generated synthetic captures (gitignored)
 real_data/             downloaded real captures (gitignored)
 output/                reports, bitstreams and decoded payloads (gitignored)
