@@ -10,6 +10,7 @@ import pytest
 from rf_analyzer.core.dsp import (
     compute_psd,
     estimate_bandwidth,
+    estimate_burst_region,
     estimate_center_frequency,
     estimate_fsk_symbol_period,
     estimate_snr,
@@ -218,3 +219,74 @@ def test_fsk_period_declines_on_short_capture():
 def test_fsk_period_declines_on_constant_signal():
     """A DC signal has no instantaneous frequency to model at all."""
     assert estimate_fsk_symbol_period(np.ones(4096, dtype=np.complex64)) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Burst region
+# --------------------------------------------------------------------------- #
+
+
+def _burst_in_noise(pad: int = 800, core_len: int = 2_000, seed: int = 7):
+    """``noise | burst | noise`` with a constant-envelope burst."""
+    rng = np.random.default_rng(seed)
+    core = np.ones(core_len, dtype=np.complex64)
+    lead = (rng.standard_normal(pad) + 1j * rng.standard_normal(pad)) * 0.05
+    trail = (rng.standard_normal(pad) + 1j * rng.standard_normal(pad)) * 0.05
+    return np.concatenate([lead, core, trail]).astype(np.complex64), pad + core_len
+
+
+def test_burst_region_finds_the_burst_and_never_lands_early():
+    """The edge error must be one-sided: late is safe, early is not.
+
+    A block counts as burst when its mean power clears the threshold, so a block
+    holding even a little burst is included. That makes the estimate land at most
+    one block early and up to one block late -- and late is the direction the
+    decoder can absorb, because appending bits leaves the earlier
+    de-interleaver blocks intact while truncating corrupts the last one.
+    """
+    samples, true_end = _burst_in_noise(pad=800)
+    res = estimate_burst_region(samples)
+
+    assert res["found"] is True
+    assert res["method"] == "envelope-threshold"
+    assert res["snr_db"] > 20.0
+    assert res["start_sample"] <= 800
+    assert true_end <= res["end_sample"] <= true_end + res["window"]
+
+
+@pytest.mark.parametrize("pad", [200, 400, 800, 1_600, 4_000])
+def test_burst_region_edge_error_is_bounded_by_one_window(pad):
+    samples, true_end = _burst_in_noise(pad=pad)
+    res = estimate_burst_region(samples)
+    assert res["found"] is True
+    assert true_end <= res["end_sample"] <= true_end + res["window"]
+
+
+def test_burst_region_declines_on_a_capture_that_is_all_signal():
+    """No noise gap means no burst, so the estimate must decline rather than
+    report the whole capture as a burst and change how a bare frame decodes."""
+    res = estimate_burst_region(np.ones(4_096, dtype=np.complex64))
+    assert res["found"] is False
+    assert res["end_sample"] is None
+    assert res["reason"], "a decline must say why"
+
+
+def test_burst_region_declines_on_pure_noise():
+    rng = np.random.default_rng(5)
+    noise = (rng.standard_normal(8_000) + 1j * rng.standard_normal(8_000)) * 0.05
+    res = estimate_burst_region(noise.astype(np.complex64))
+    assert res["found"] is False
+    assert res["end_sample"] is None
+    assert "no burst" in res["reason"]
+
+
+def test_burst_region_declines_on_short_and_empty_captures():
+    """Degenerate input must be answered, not raised on."""
+    assert estimate_burst_region(np.array([], dtype=np.complex64))["found"] is False
+    short = estimate_burst_region(np.ones(16, dtype=np.complex64))
+    assert short["found"] is False
+    assert "shorter than" in short["reason"]
+    assert (
+        estimate_burst_region(np.ones(512, dtype=np.complex64), window=0)["found"]
+        is False
+    )

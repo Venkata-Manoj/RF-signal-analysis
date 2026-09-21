@@ -16,6 +16,29 @@ DECODE_TIME_BUDGET_S = 4.0
 #: Preview size for payload hex/text rendering in the report.
 PAYLOAD_PREVIEW_BYTES = 256
 
+# Burst-region estimation.
+#
+# The CRC anchor is searched near the end of the demodulated stream, so a frame
+# followed by a long noise tail has its anchor land on noise and the frame is
+# never found. Measuring where the burst ends and passing that length as
+# `frame_bits` is what lets a burst-in-noise capture decode.
+#
+#: Envelope resolution, in samples: the capture is averaged into blocks of this
+#: size before thresholding. It also bounds how far the estimated edge can sit
+#: from the truth (measured: at most one block early, up to one block late), so
+#: it must stay well inside the CRC search window (32 bytes).
+BURST_ENVELOPE_WINDOW = 64
+#: Minimum burst-to-floor power ratio for a region to count as a burst. Below
+#: this there is no burst to find and the estimate is reported as unavailable,
+#: which leaves the decode behaving exactly as it did before.
+BURST_MIN_SNR_DB = 6.0
+#: Bits added to the estimated coded-region length. The estimate is biased *long*
+#: on purpose, because the two directions are not symmetric: appending bits
+#: leaves every earlier de-interleaver block intact, while truncating below the
+#: true frame end corrupts the last block and destroys the CRC. The CRC search
+#: window tolerates up to 32 bytes of excess, so this stays far inside it.
+BURST_FRAME_SLACK_BITS = 128
+
 # Constellation-fit cross-check for the modulation estimate.
 #
 # The classifier picks a modulation from higher-order statistics; EVM then

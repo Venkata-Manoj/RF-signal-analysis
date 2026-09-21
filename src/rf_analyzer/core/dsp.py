@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 
 from rf_analyzer.config import (
+    BURST_ENVELOPE_WINDOW,
+    BURST_MIN_SNR_DB,
     FSK_MAX_RECONSTRUCTION_RESIDUAL,
     FSK_MIN_SYMBOL_PERIOD,
 )
@@ -643,4 +645,164 @@ def compute_evm(
         "mer_db": mer_db,
         "snr_db_from_evm": mer_db,
         "n_symbols": int(x.size),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Burst region
+# --------------------------------------------------------------------------- #
+
+
+def _longest_true_run(mask: np.ndarray) -> tuple[int, int]:
+    """First and last index of the longest run of True in ``mask``.
+
+    Returns ``(0, -1)`` for an all-False mask, which callers read as "no run".
+    """
+    if not mask.any():
+        return 0, -1
+    padded = np.concatenate([[False], mask, [False]])
+    edges = np.flatnonzero(np.diff(padded.view(np.int8)))
+    starts, ends = edges[0::2], edges[1::2] - 1
+    longest = int(np.argmax(ends - starts))
+    return int(starts[longest]), int(ends[longest])
+
+
+def _otsu_threshold_db(values_db: np.ndarray, bins: int = 256) -> float:
+    """Otsu's threshold: the split that maximises between-class variance.
+
+    Returns ``nan`` when the samples have no dynamic range to split.
+    """
+    lo, hi = float(np.min(values_db)), float(np.max(values_db))
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return float("nan")
+    hist, edges = np.histogram(values_db, bins=bins, range=(lo, hi))
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    w0 = np.cumsum(hist)
+    w1 = int(hist.sum()) - w0
+    csum = np.cumsum(hist * centers)
+    total_mean = csum[-1]
+    valid = (w0 > 0) & (w1 > 0)
+    if not valid.any():
+        return float("nan")
+    mu0 = np.divide(csum, w0, out=np.zeros_like(csum), where=w0 > 0)
+    mu1 = np.divide(total_mean - csum, w1, out=np.zeros_like(csum), where=w1 > 0)
+    between = np.where(valid, w0 * w1 * (mu0 - mu1) ** 2, -1.0)
+    return float(centers[int(np.argmax(between))])
+
+
+def estimate_burst_region(
+    samples: np.ndarray,
+    *,
+    window: int = BURST_ENVELOPE_WINDOW,
+    min_snr_db: float = BURST_MIN_SNR_DB,
+) -> dict:
+    """Locate the contiguous signal burst inside a capture, in samples.
+
+    A real recording is a burst surrounded by noise. The decoder needs to know
+    where the burst *ends*: the CRC anchor is searched near the end of the
+    demodulated stream, so when a frame is followed by a long noise tail the
+    anchor lands on noise and the frame is never found. This estimate is what
+    supplies ``decode_hypotheses``'s ``frame_bits`` hint.
+
+    The envelope is the mean power per ``window`` samples, and noise is separated
+    from burst by **Otsu's threshold** on the log-envelope -- the split that
+    maximises between-class variance. A fixed percentile is the obvious
+    alternative and it is the wrong one, because the fraction of the capture that
+    is noise is exactly what varies: a short burst in a long recording leaves the
+    noise below any sensible percentile, so a percentile floor lands *inside* the
+    burst and reports no burst at all. Otsu assumes nothing about class balance;
+    it only needs the two levels to be separated, which is the thing being
+    tested. The longest run above the threshold is the burst.
+
+    Two properties matter more than accuracy:
+
+    * **The edge error is bounded and one-sided.** A block counts as burst when
+      its mean power clears the threshold, so a block holding even a little
+      burst is included. The estimate therefore lands at most one block *early*
+      and up to one block *late* -- and late is the safe direction (see
+      ``BURST_FRAME_SLACK_BITS``).
+    * **A wrong region can only cost a decode, never fake one.** This narrows a
+      search; the CRC-16 still decides. A capture with no burst (a continuous
+      signal, or one that fills the capture) reports ``found=False`` and the
+      decode behaves exactly as it did before.
+
+    Args:
+        samples: Complex baseband samples.
+        window: Envelope resolution in samples.
+        min_snr_db: Minimum burst-to-floor ratio for a region to count.
+
+    Returns:
+        ``{"found", "start_sample", "end_sample", "n_samples", "window",
+        "noise_floor_db", "burst_level_db", "threshold_db", "snr_db", "method",
+        "reason"}``. ``end_sample`` is exclusive; ``None`` when not found.
+    """
+    x = np.asarray(samples).ravel()
+    n = int(x.size)
+    blank: dict = {
+        "found": False,
+        "start_sample": None,
+        "end_sample": None,
+        "n_samples": n,
+        "window": int(window),
+        "noise_floor_db": None,
+        "burst_level_db": None,
+        "threshold_db": None,
+        "snr_db": None,
+        "method": "envelope-threshold",
+        "reason": "",
+    }
+    if window <= 0:
+        return {**blank, "reason": "window must be positive"}
+    if n < 2 * window:
+        return {**blank, "reason": "capture shorter than two envelope windows"}
+
+    n_blocks = n // window
+    blocks = x[: n_blocks * window].reshape(n_blocks, window)
+    env = np.mean(np.abs(blocks) ** 2, axis=1).astype(np.float64)
+    if not np.all(np.isfinite(env)) or float(np.max(env)) <= 0.0:
+        return {**blank, "reason": "envelope has no usable dynamic range"}
+    # A zero block would make the log undefined and stretch the histogram range
+    # without adding information. Floor it 120 dB below the peak: still clearly
+    # noise, still index-preserving.
+    env = np.maximum(env, float(np.max(env)) * 1e-12)
+
+    env_db = 10.0 * np.log10(env)
+    threshold_db = _otsu_threshold_db(env_db)
+    if not np.isfinite(threshold_db):
+        return {**blank, "reason": "envelope has no usable dynamic range"}
+
+    above = env_db > threshold_db
+    if not above.any() or above.all():
+        return {
+            **blank,
+            "threshold_db": threshold_db,
+            "reason": "envelope is unimodal: no burst to separate",
+        }
+    floor_db = float(np.mean(env_db[~above]))
+    level_db = float(np.mean(env_db[above]))
+    snr_db = level_db - floor_db
+    blank.update(
+        noise_floor_db=floor_db,
+        burst_level_db=level_db,
+        threshold_db=threshold_db,
+        snr_db=snr_db,
+    )
+    if snr_db < min_snr_db:
+        # A capture that is all signal, or all noise, has no burst to find. That
+        # is the common case for a bare frame and for the continuous real-world
+        # recordings, and it must not change how they decode.
+        return {
+            **blank,
+            "reason": f"no burst above the noise floor (separation {snr_db:.1f} dB)",
+        }
+
+    first, last = _longest_true_run(above)
+    start_sample = first * window
+    end_sample = min((last + 1) * window, n)
+    return {
+        **blank,
+        "found": True,
+        "start_sample": int(start_sample),
+        "end_sample": int(end_sample),
+        "reason": "",
     }
