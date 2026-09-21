@@ -41,6 +41,30 @@ REQUIRED_REPORT_KEYS = (
 #: Scratch files the checks leave in ``output/``, cleaned up after the verdict.
 _SCRATCH: list[Path] = []
 
+#: Cleanup run in a child process, after the verdict has been printed. Removes the
+#: registered paths, then any ``output/_verify*`` file -- the reserved prefix for
+#: this harness's scratch, which also catches the artifacts ``analyze_file`` writes
+#: next to a scratch capture. Files only: never a directory, never recursively, and
+#: an unexpected failure is swallowed rather than allowed to matter, because by the
+#: time this runs the verdict and the exit code are already decided.
+_CLEANUP_SNIPPET = """\
+import pathlib, sys
+
+
+def rm(p):
+    try:
+        pathlib.Path(p).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+for p in sys.argv[1:]:
+    rm(p)
+for p in pathlib.Path("output").glob("_verify*"):
+    if p.is_file():
+        rm(p)
+"""
+
 
 def _register_scratch(path: Path) -> Path:
     """Record a scratch file so it is cleaned up *after* the verdict is printed.
@@ -795,6 +819,15 @@ def main() -> int:
     # down with it even though PASS had already been printed. Isolating the
     # deletion means the verdict *and* the exit code survive a blocked cleanup.
     # See the note on _register_scratch.
+    #
+    # Besides the registered paths this sweeps ``output/_verify*``. Registering
+    # a capture only covers the capture: ``analyze_file`` also writes
+    # ``<stem>_bits.bin``, ``<stem>_report.json`` and ``<stem>_payload.bin``
+    # next to it, into a *relative* ``output/``. Those would otherwise survive
+    # every run and pile up under the reserved prefix, which is the one place a
+    # reader cannot tell harness scratch from a real artifact. The prefix is
+    # reserved by this harness, and only files are removed -- never directories,
+    # and never recursively.
     if _SCRATCH:
         # Flush first: stdout is block-buffered when redirected, and an
         # unflushed verdict is lost if anything kills this process.
@@ -803,9 +836,7 @@ def main() -> int:
             [
                 sys.executable,
                 "-c",
-                "import pathlib, sys\n"
-                "for p in sys.argv[1:]:\n"
-                "    pathlib.Path(p).unlink(missing_ok=True)\n",
+                _CLEANUP_SNIPPET,
                 *[str(p) for p in _SCRATCH],
             ],
             capture_output=True,

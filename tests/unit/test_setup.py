@@ -204,3 +204,41 @@ def test_a_missing_generated_capture_fails_loudly_instead_of_vanishing(
     assert checks.ok is False
     assert checks.skipped == 0
     assert checks.total == 7, "the count must not shrink when an input is missing"
+
+
+def test_cleanup_takes_the_derived_artifacts_and_nothing_else(tmp_path):
+    """Cleanup must remove the pipeline's derived files, and leave everything else.
+
+    Registering a capture only covers the capture, but ``analyze_file`` also writes
+    ``<stem>_bits.bin`` / ``<stem>_report.json`` / ``<stem>_payload.bin`` beside it.
+    Left behind, those pile up under the reserved ``_verify`` prefix -- the one
+    place in ``output/`` where a reader cannot tell harness scratch from a real
+    artifact. A directory must survive (no recursive delete) and a non-prefixed
+    report is not ours to touch.
+    """
+    verify_mvp = _load_verify_mvp()
+
+    out = tmp_path / "output"
+    out.mkdir()
+    for name in (
+        "_verify_a.iq",
+        "_verify_a_bits.bin",
+        "_verify_a_report.json",
+        "_verify_batch.csv",
+        "bpsk_report.json",  # a real artifact, not scratch
+    ):
+        (out / name).write_text("x", encoding="utf-8")
+    (out / "_verify_sweep").mkdir()
+
+    proc = subprocess.run(
+        [sys.executable, "-c", verify_mvp._CLEANUP_SNIPPET, str(out / "_verify_a.iq")],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+
+    assert proc.returncode == 0
+    assert sorted(p.name for p in out.iterdir()) == [
+        "_verify_sweep",
+        "bpsk_report.json",
+    ]
