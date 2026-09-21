@@ -34,6 +34,28 @@ REQUIRED_REPORT_KEYS = (
     "errors",
 )
 
+#: Scratch files the checks leave in ``output/``, cleaned up after the verdict.
+_SCRATCH: list[Path] = []
+
+
+def _register_scratch(path: Path) -> Path:
+    """Record a scratch file so it is cleaned up *after* the verdict is printed.
+
+    Deleting between checks makes the verdict unreachable wherever a deletion
+    can be blocked: a sandbox delete guard kills the process outright with
+    SIGTERM, which ``try/except OSError`` cannot catch because it is a signal,
+    not an exception. PASS then never gets printed and a fully passing run looks
+    like a failure. The same shape appears with a read-only or locked ``output/``
+    -- an antivirus or indexer holding a freshly written file is enough on
+    Windows.
+
+    What is being verified is the report, not the tidiness of ``output/`` (which
+    is gitignored scratch), so cleanup is deferred to the end of ``main`` where
+    it cannot sit upstream of the verdict.
+    """
+    _SCRATCH.append(path)
+    return path
+
 
 def run_command(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     print(f"Running: {' '.join(cmd)}")
@@ -279,42 +301,32 @@ def check_payload_honesty(checks: Checks) -> None:
     )
     out = ROOT / "output"
     out.mkdir(exist_ok=True)
-    noise_path = out / "_verify_noise.iq"
+    noise_path = _register_scratch(out / "_verify_noise.iq")
     samples.tofile(noise_path)
-    try:
-        report = analyze_file(
-            {
-                "file_path": str(noise_path),
-                "sample_rate": 100000,
-                "modulation": "BPSK",
-                "sync_word": "0x1ACFFC1D",
-            }
-        )
-        payload = report.get("payload") or {}
-        checks.check(
-            "random bits produce no decoded payload",
-            (payload.get("decoded") or {}).get("available") is False,
-            f"candidate={report.get('fec', {}).get('candidate')}",
-        )
-        checks.check(
-            "blind FEC score stays capped at 0.5",
-            float(report.get("fec", {}).get("confidence", 1.0)) <= 0.5,
-            f"confidence={report.get('fec', {}).get('confidence')}",
-        )
-        checks.check(
-            "undecoded capture is warned about",
-            any("not a decoded message" in w for w in report.get("warnings", [])),
-            f"{len(report.get('warnings', []))} warning(s)",
-        )
-    finally:
-        # Best-effort scratch cleanup. A scratch file that cannot be removed
-        # (locked, read-only, or blocked by a sandbox policy) must not turn a
-        # passing verification into a failure: what is being verified is the
-        # report, not the tidiness of `output/`.
-        try:
-            noise_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+    report = analyze_file(
+        {
+            "file_path": str(noise_path),
+            "sample_rate": 100000,
+            "modulation": "BPSK",
+            "sync_word": "0x1ACFFC1D",
+        }
+    )
+    payload = report.get("payload") or {}
+    checks.check(
+        "random bits produce no decoded payload",
+        (payload.get("decoded") or {}).get("available") is False,
+        f"candidate={report.get('fec', {}).get('candidate')}",
+    )
+    checks.check(
+        "blind FEC score stays capped at 0.5",
+        float(report.get("fec", {}).get("confidence", 1.0)) <= 0.5,
+        f"confidence={report.get('fec', {}).get('confidence')}",
+    )
+    checks.check(
+        "undecoded capture is warned about",
+        any("not a decoded message" in w for w in report.get("warnings", [])),
+        f"{len(report.get('warnings', []))} warning(s)",
+    )
 
 
 def check_auto_detection(checks: Checks) -> None:
@@ -368,27 +380,19 @@ def check_batch_exports(checks: Checks) -> None:
     )
 
     out = ROOT / "output"
-    try:
-        csv_path = write_csv(rows, out / "_verify_batch.csv")
-        html_path = write_html(rows, out / "_verify_batch.html")
-        text = html_path.read_text(encoding="utf-8")
-        checks.check(
-            "batch CSV export written",
-            csv_path.exists() and csv_path.stat().st_size > 0,
-            f"{csv_path.stat().st_size} bytes",
-        )
-        checks.check(
-            "batch HTML export is self-contained",
-            html_path.exists() and "http" not in text.replace("http-equiv", ""),
-            f"{html_path.stat().st_size} bytes",
-        )
-    finally:
-        # Best-effort scratch cleanup -- see the note in check_payload_honesty.
-        for name in ("_verify_batch.csv", "_verify_batch.html"):
-            try:
-                (out / name).unlink(missing_ok=True)
-            except OSError:
-                pass
+    csv_path = _register_scratch(write_csv(rows, out / "_verify_batch.csv"))
+    html_path = _register_scratch(write_html(rows, out / "_verify_batch.html"))
+    text = html_path.read_text(encoding="utf-8")
+    checks.check(
+        "batch CSV export written",
+        csv_path.exists() and csv_path.stat().st_size > 0,
+        f"{csv_path.stat().st_size} bytes",
+    )
+    checks.check(
+        "batch HTML export is self-contained",
+        html_path.exists() and "http" not in text.replace("http-equiv", ""),
+        f"{html_path.stat().st_size} bytes",
+    )
 
 
 def check_report_schema(checks: Checks) -> None:
@@ -686,12 +690,36 @@ def main() -> int:
         print(f"{checks.total} individual checks passed.")
         print("MVP verification complete.")
         print("PASS")
-        return 0
+        code = 0
+    else:
+        print(f"{checks.total} individual checks run, at least one failed.")
+        print("MVP verification complete.")
+        print("FAIL")
+        code = 1
 
-    print(f"{checks.total} individual checks run, at least one failed.")
-    print("MVP verification complete.")
-    print("FAIL")
-    return 1
+    # Cleanup strictly *after* the verdict, and in a child process. A blocked
+    # deletion is enforced by killing whatever performs it with SIGTERM, which
+    # cannot be caught, so deleting in this process would take the exit code
+    # down with it even though PASS had already been printed. Isolating the
+    # deletion means the verdict *and* the exit code survive a blocked cleanup.
+    # See the note on _register_scratch.
+    if _SCRATCH:
+        # Flush first: stdout is block-buffered when redirected, and an
+        # unflushed verdict is lost if anything kills this process.
+        sys.stdout.flush()
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import pathlib, sys\n"
+                "for p in sys.argv[1:]:\n"
+                "    pathlib.Path(p).unlink(missing_ok=True)\n",
+                *[str(p) for p in _SCRATCH],
+            ],
+            capture_output=True,
+            cwd=ROOT,
+        )
+    return code
 
 
 if __name__ == "__main__":
