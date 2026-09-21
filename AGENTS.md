@@ -7,7 +7,7 @@
 - Actual layout: `src/rf_analyzer/{config,pipeline,batch,dashboard}.py`, `core/{io,dsp,classifier,demod,correlator,fec,deinterleave,framing,payload,report}.py`, `gui/main_window.py`, `web/dashboard.html`; `scripts/{generate_test_data,run_app,run_pipeline,serve_dashboard,batch_analyze,fetch_real_data,verify_mvp,benchmark_snr}.py`; `tests/{unit,integration}`; `sample_data/`, `real_data/`, `output/`.
 
 ## Stack (do not swap)
-- Python 3.11, `numpy/scipy/soundfile/PyQt6/pyqtgraph`; dev `pytest/ruff/black/mypy`. No GNU Radio.
+- Python 3.11, `numpy/scipy/soundfile/PyQt6/pyqtgraph`; dev `pytest/ruff/black/mypy`. **No GNU Radio, deliberately** — the brief names "GNU Radio, python, C++" as alternatives and Python is one of them; the DSP/FEC/interleavers are from scratch so they stay testable. Don't re-litigate this in docs without reading the README's Known limitations.
 - `pytest.ini` must set `testpaths=tests`, `pythonpath=src`.
 
 ## Contracts agents get wrong

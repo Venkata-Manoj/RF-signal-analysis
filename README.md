@@ -16,8 +16,8 @@ file and want to know what is inside it, start at [Quick start](#quick-start).
 - [What it does](#what-it-does)
 - [Quick start](#quick-start)
 - [Three ways to use it](#three-ways-to-use-it)
-  - [1. Web dashboard (easiest)](#1-web-dashboard-easiest)
-  - [2. Desktop app](#2-desktop-app)
+  - [1. Desktop app (the GUI)](#1-desktop-app-the-gui)
+  - [2. Web dashboard (no-install alternative)](#2-web-dashboard-no-install-alternative)
   - [3. Command line](#3-command-line)
 - [Understanding the output](#understanding-the-output)
 - [What "verified" means (and what it does not)](#what-verified-means-and-what-it-does-not)
@@ -69,12 +69,18 @@ python -m pip install -r requirements-dev.txt
 # Create the sample signals used by the demos and tests
 python scripts/generate_test_data.py
 
-# Easiest way in: a browser dashboard on your own machine
-python scripts/serve_dashboard.py --open
+# Launch the desktop GUI — this is the "GUI based model" the brief asks for
+python scripts/run_app.py
 ```
 
-Your browser opens at `http://127.0.0.1:8765`. Pick a capture from the dropdown, leave
-the sample rate at `100000`, and press **Analyze capture**.
+The window opens with seven tabs — **Time, Spectrum, Waterfall, Constellation, Eye,
+Bitstream, Payload**. Use **Open Demo Capture** for a bundled signal, or **File → Open** for
+your own `.iq`/`.wav`. Set the sample rate if you are using a raw `.iq` file (see
+[Supported files](#supported-files-and-schemes)), then press **Run analysis**.
+
+Don't want to open a window? `python scripts/serve_dashboard.py --open` gives you the same
+analysis in a browser instead. It is an extra, not a substitute for the desktop app — both
+call the identical analysis code.
 
 On macOS or Linux the only difference is the activation step:
 
@@ -84,7 +90,7 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 python -m pip install -r requirements-dev.txt   # optional: tests + verification only
 python scripts/generate_test_data.py
-python scripts/serve_dashboard.py --open
+python scripts/run_app.py                       # launch the desktop GUI
 ```
 
 > **Nothing else is installed.** The dashboard is served by Python's own standard
@@ -98,7 +104,22 @@ python scripts/serve_dashboard.py --open
 All three call exactly the same analysis code (`pipeline.analyze_file`), so they can
 never disagree with each other.
 
-### 1. Web dashboard (easiest)
+### 1. Desktop app (the GUI)
+
+The brief asks for a **GUI-based model**, and this is it: a full PyQt6 workbench with seven
+tabs, plus a **Payload** tab showing the decoded message and a raw hex/ASCII dump.
+
+```powershell
+python scripts/run_app.py
+```
+
+Useful menu items: **Open Demo Capture**, **Batch Folder Analysis**, **Run Full Demo**.
+
+### 2. Web dashboard (no-install alternative)
+
+The same analysis with no window at all, served by Python's own standard library. It is an
+extra beyond the brief, and useful when you cannot run a Qt app — a locked-down machine, or a
+demo over a shared screen.
 
 ```powershell
 python scripts/serve_dashboard.py            # then open http://127.0.0.1:8765
@@ -115,17 +136,6 @@ You can share a link to a specific analysis — `http://127.0.0.1:8765/?name=bps
 opens that capture and analyses it immediately.
 
 The server listens on `127.0.0.1` only, so it is not reachable from other machines.
-
-### 2. Desktop app
-
-A full PyQt6 workbench with the same plots plus a **Payload** tab showing the decoded
-message and a raw hex/ASCII dump.
-
-```powershell
-python scripts/run_app.py
-```
-
-Useful menu items: **Open Demo Capture**, **Batch Folder Analysis**, **Run Full Demo**.
 
 ### 3. Command line
 
@@ -492,11 +502,12 @@ Use `python`, not `python3`.
 | De-interleave: Block, Convolution, Diagonal, Pseudo-Random | `core/deinterleave.py` — all four, plus a sub-block pseudo-random variant |
 | FEC: convolutional + Viterbi, Reed–Solomon, concatenated, LDPC | `core/fec.py` — all implemented from scratch and CRC-verified |
 | Bit stream correlation | `core/correlator.py` — with false-alarm control so long captures cannot fake a header |
-| GUI-based model | `gui/main_window.py` (desktop) and `web/dashboard.html` (browser) |
+| GUI-based model | `gui/main_window.py` + `scripts/run_app.py` — a PyQt6 desktop app with seven tabs. The browser dashboard is an extra, not the GUI the brief asks for |
 | Improved feature visibility — constellation, waterfall | Both UIs, plus spectrum, eye diagram and a bit-stream ribbon |
 | Automated analysis | `pipeline.analyze_file()`, `batch.py`, `scripts/batch_analyze.py` |
 | Error correction | `core/fec.py`, verified by CRC-16 |
 | Header/payload identification | `core/correlator.py` + `core/payload.py` |
+| Toolchain — "advanced models such as GNU Radio, python, C++" | Python 3.11 + NumPy/SciPy, one of the alternatives the brief names. The DSP, FEC codecs and interleavers are implemented from scratch rather than assembled from library blocks, so each one is unit-tested against known-answer vectors and gated on a CRC-16 pass |
 
 **Extra features beyond the brief:** zero-install web dashboard; IQ-format auto-detection;
 one-click demo and full-demo runs; batch folder analysis with CSV and self-contained HTML
@@ -571,7 +582,13 @@ We would rather list these than have you discover them:
   levels × 7 paddings × 3 seeds) every capture that decoded returned the exact message, and
   **no case ever produced a wrong payload**. Pinned by
   `tests/integration/test_burst_in_noise.py` and `tests/unit/test_dsp.py`.
-- **No GNU Radio and no RF hardware.** Everything runs on files.
+- **No GNU Radio, and that is a choice rather than a gap.** The problem statement offers
+  "advanced models such as GNU Radio, python, C++", and Python is one of the alternatives it
+  names, so the requirement is met by picking it. The DSP, FEC codecs and interleavers here are
+  written from scratch in NumPy instead of being assembled from library blocks — which is what
+  makes the behaviour checkable to the level the rest of this section describes. A library block
+  is convenient, but you cannot point a test at the inside of it. GNU Radio's real advantage is
+  driving live radio hardware, and there is none here: everything runs on files.
 
 ---
 
