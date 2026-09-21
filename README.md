@@ -332,8 +332,9 @@ python scripts/verify_mvp.py
 ```
 
 This regenerates the test data, runs the whole test suite, and then performs **57
-individual checks** end to end. It prints `PASS` and exits `0` only if every one
-succeeds. It covers, among others:
+individual checks** end to end — it prints that count itself, so the number here
+cannot drift away from what actually ran. It prints `PASS` and exits `0` only if
+every one succeeds. It covers, among others:
 
 - the core pipeline on a clean BPSK capture (BER < 0.01, correlation > 0.9)
 - all six coded captures decoding back to the **exact transmitted message**, with the
@@ -352,7 +353,7 @@ succeeds. It covers, among others:
 Other useful commands:
 
 ```powershell
-pytest                                        # the full suite (426 tests)
+pytest                                        # the full suite (443 tests)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
 python scripts/measure_fec_capability.py      # re-derive the FEC tolerance numbers below
@@ -470,14 +471,19 @@ We would rather list these than have you discover them:
   the GPS L1 capture is classified as 16-QAM. The tool flags the poor fit rather than
   hiding it. EVM is *not* used to pick a modulation, because it always favours denser
   constellations.
-- **The modulation label is not invariant to how much noise surrounds the burst.** The
-  same BPSK burst is labelled QPSK or 8PSK once enough noise is added either side of it,
-  at 0.7–0.85 confidence and with no warning that the label is unreliable. Real captures
-  *are* bursts in noise, so this is the limitation most likely to bite in practice: when
-  the label is wrong the header usually fails to correlate, and the report then says
-  "no frame found", which points at the wrong problem. Unlike the 2-FSK case there is no
-  cheap independent corroboration to lean on here — EVM cannot separate these, because a
-  sparser constellation always fits a denser one's points. Pinned by
+- **The modulation label is corroborated by the header, not by the classifier alone.** The
+  classifier works from whole-capture statistics, which are not invariant to how much noise
+  surrounds a burst: the same BPSK burst is labelled QPSK or 8PSK once enough noise is added
+  either side, at 0.7–0.85 confidence. That is a real problem, because a wrong label hides
+  the sync word and the report then says "no frame found" — pointing at a framing bug that
+  is really a classification one. So the tool no longer trusts the classifier's answer on
+  its own: when the chosen demodulation sees a hint of the sync word but cannot confirm it,
+  the other demodulations are tried and the one that actually correlates the header wins,
+  with `modulation.revised_from` recording what the classifier originally said and a warning
+  explaining the revision. Two caveats remain, and they are honest ones: the arbitration
+  needs a sync word (with none supplied, nothing is revised), and a wrong label that happens
+  to correlate is still reported as right. EVM cannot help here — a sparser constellation
+  always fits a denser one's points, so EVM cannot separate BPSK from QPSK. Pinned by
   `tests/integration/test_burst_in_noise.py`.
 - **A signal with no data on it is still given a label.** Measured on the bundled
   samples, the FSK test (low instantaneous-frequency variance) fires for an unmodulated
@@ -496,13 +502,15 @@ We would rather list these than have you discover them:
   control that makes the error-correction claims meaningful.
 - **The decode search examines a bounded prefix** (16,384 bits, 4 s by default) to respect
   the performance budget. Raise `decode_max_bits` / `decode_time_budget_s` for long frames.
-- **A decode is only found when the capture ends at the frame boundary.** The decoder
-  assumes a single-burst capture, so a frame followed by noise — or by any trailing
-  samples — will not decode even when the modulation is correct and the sync word is
-  found at the right offset with a perfect score. The receiver has no way to know the
-  burst length from the signal alone; estimating it is a V2 item. Workaround: cap
-  `decode_max_bits` to just past the frame, which is what makes this a missing frame-length
-  estimate rather than a decoding fault. Pinned by
+- **A decode is only found while the CRC anchor can still reach the frame end.** The
+  decoder assumes a single-burst capture, so it anchors the CRC-16 to the end of the
+  capture. A short trailing tail is tolerated — measured on the bundled frame, a tail of up
+  to 400 samples still decodes exactly — but beyond that the anchor no longer lands on the
+  frame and the decode fails. The receiver has no way to know the burst length from the
+  signal alone; estimating it is a V2 item. Workaround: cap `decode_max_bits` to just past
+  the frame, which is what makes this a missing frame-length estimate rather than a decoding
+  fault. What matters most is that it fails *honestly*: across every padding value tested,
+  the tool never once reported a wrong payload, only a correct one or none. Pinned by
   `tests/integration/test_burst_in_noise.py`.
 - **No GNU Radio and no RF hardware.** Everything runs on files.
 
