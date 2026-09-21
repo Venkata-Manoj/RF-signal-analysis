@@ -30,6 +30,8 @@ from rf_analyzer.config import (
     MODULATION_FIT_CANDIDATES,
     MODULATION_FIT_EVM_WARN,
     MODULATION_FIT_MAX_SAMPLES,
+    MODULATION_HEADER_CORROBORATED_CONFIDENCE,
+    MODULATION_RETRY_MIN_SCORE,
     MODULATION_UNCORROBORATED_CONFIDENCE,
     PAYLOAD_PREVIEW_BYTES,
     TOOL_NAME,
@@ -138,6 +140,62 @@ def _classify_modulation(samples: np.ndarray) -> tuple[str, float, list[str]]:
     if var_f < 1.0:
         return "2-FSK", 0.65, ["BPSK", "QPSK", "16-QAM"]
     return "QPSK", 0.7, ["BPSK", "2-FSK", "16-QAM"]
+
+
+#: Modulations the header search may fall back to, cheapest first. BPSK and
+#: QPSK are one decision each; 16-QAM and 2-FSK cost more, so they come last.
+HEADER_FALLBACK_MODULATIONS = ("BPSK", "QPSK", "16-QAM", "2-FSK")
+
+
+def _demodulate_for(samples: np.ndarray, mode: str) -> tuple[np.ndarray | None, int]:
+    """Demodulate with one candidate modulation.
+
+    Returns ``(bits, samples_per_symbol)``. 2-FSK is the only mode that is not
+    one sample per symbol, so it also recovers its period here.
+    """
+    if mode == "BPSK":
+        return demod_bpsk(samples), 1
+    if mode == "QPSK":
+        return demod_qpsk(samples), 1
+    if mode == "16-QAM":
+        return demod_qam16(samples), 1
+    if mode in ("2-FSK", "2FSK"):
+        period = estimate_fsk_symbol_period(samples)
+        return demod_2fsk(samples, period), period
+    return None, 1
+
+
+def _corroborate_modulation(
+    samples: np.ndarray, sync_bits: np.ndarray, *, current: str
+) -> tuple[str, np.ndarray, int, dict, bool | None] | None:
+    """Find a modulation whose demodulation can actually see the sync word.
+
+    The classifier decides from whole-capture statistics, and those are not
+    invariant to how much noise surrounds the burst -- a clean BPSK burst is
+    labelled QPSK or 8PSK once enough noise is padded either side of it. A wrong
+    label hides the header, so without this the report says "no frame found" and
+    sends the user looking for a framing bug that is really a classification one.
+
+    Header correlation is independent of the classifier, so it is a fair
+    arbiter. Returns ``(mode, bits, samples_per_symbol, found, corroborated)``
+    for the first candidate that correlates the header, or ``None`` when the
+    current modulation is as good as any.
+    """
+    wanted = str(current).upper()
+    for candidate in HEADER_FALLBACK_MODULATIONS:
+        if candidate.upper() == wanted:
+            continue
+        try:
+            bits, samples_per_symbol = _demodulate_for(samples, candidate)
+        except Exception:  # a bad candidate is a miss, never a crash
+            continue
+        if bits is None or bits.size < sync_bits.size:
+            continue
+        found = find_header(np.asarray(bits), sync_bits)
+        if bool(found.get("detected", False)):
+            corroborated = samples_per_symbol > 1 if candidate == "2-FSK" else None
+            return candidate, bits, samples_per_symbol, found, corroborated
+    return None
 
 
 def analyze_file(request: dict) -> dict:
@@ -268,6 +326,9 @@ def analyze_file(request: dict) -> dict:
         # Whether the estimated modulation was independently corroborated.
         # None = the check does not apply to this mode.
         corroborated: bool | None = None
+        # Set when the header search replaced the classifier's own label, so the
+        # report can show a revised estimate as revised.
+        revised_from: str | None = None
 
         if mode == "BPSK":
             bits = demod_bpsk(samples)
@@ -317,8 +378,17 @@ def analyze_file(request: dict) -> dict:
                     )
         elif mode == "16-QAM":
             bits = demod_qam16(samples)
-        else:  # pragma: no cover - defensive; mode is normalized above
+        else:
             warnings.append(f"Unsupported modulation '{mode}'. Used BPSK fallback.")
+            # The classifier named a modulation this MVP cannot demodulate, so
+            # BPSK is what the bit stream was actually read as. Report *that* as
+            # the estimate and keep the classifier's answer in `revised_from` --
+            # otherwise the report names a modulation the bits never came from,
+            # which is exactly the kind of wrong parameter this tool exists to
+            # get right. (The classifier does emit 8PSK, and there is no 8PSK
+            # demodulator here; 8PSK appears only in the EVM fit cross-check.)
+            revised_from = estimated_type
+            estimated_type = "BPSK"
             mode = "BPSK"
             bits = demod_bpsk(samples)
 
@@ -412,6 +482,65 @@ def analyze_file(request: dict) -> dict:
             payload_start = offset + int(sync_bits.size)
         else:
             payload_start = 0
+
+        # ---- Modulation corroboration by header search --------------------
+        # The classifier's label is not invariant to how much noise surrounds
+        # the burst: a clean BPSK burst is labelled QPSK or 8PSK once enough
+        # noise is padded either side of it, and a wrong label hides the sync
+        # word. Without this step the report says "no frame found" and sends the
+        # user hunting for a framing bug that is really a classification one.
+        #
+        # Header correlation is independent of the classifier, so it is a fair
+        # arbiter. Only an *estimate* is revised: an explicit user request is
+        # never overridden. The score gate keeps the retry off pure-noise
+        # captures, where it could only cost time.
+        if (
+            requested == "AUTO"
+            and sync_bits is not None
+            and not correlation["detected"]
+            and float(correlation["score"]) > MODULATION_RETRY_MIN_SCORE
+        ):
+            revision = _corroborate_modulation(samples, sync_bits, current=mode)
+            if revision is not None:
+                previous_type = estimated_type
+                mode, bits, samples_per_symbol, found, corroborated = revision
+                estimated_type = mode
+                revised_from = previous_type
+                offset = int(found.get("offset", -1))
+                score = float(found.get("score", 0.0))
+                correlation = {
+                    "sync_word": sync_word,
+                    "assumed": assumed_sync_word is not None,
+                    "header_offset": offset,
+                    "offset": offset,
+                    "score": score,
+                    "detected": True,
+                    "sync_length": int(sync_bits.size),
+                    "min_score": float(found.get("min_score", 0.0)),
+                    "min_matches": int(found.get("min_matches", 0)),
+                    "positions_searched": int(found.get("positions_searched", 0)),
+                    "probe": probe_info,
+                }
+                payload_start = offset + int(sync_bits.size) if offset >= 0 else 0
+                confidence = MODULATION_HEADER_CORROBORATED_CONFIDENCE
+                alternatives = [previous_type] + [
+                    alt for alt in alternatives if str(alt).upper() != mode.upper()
+                ]
+                if mode == "2-FSK" and samples_per_symbol > 1:
+                    # Same reasoning as the 2-FSK branch above: the |x|^2
+                    # symbol-rate estimate is meaningless for constant-envelope
+                    # FSK, so the recovered period is the direct measurement.
+                    symbol_rate_estimate = float(sample_rate) / float(
+                        samples_per_symbol
+                    )
+                warnings.append(
+                    f"The {previous_type} demodulation found no header, but "
+                    f"{mode} did (correlation {score:.2f} at bit {offset}), so "
+                    f"the modulation estimate was revised to {mode}. The "
+                    f"classifier's {previous_type} label is unreliable when a "
+                    "burst is surrounded by noise; the header match is "
+                    "independent evidence."
+                )
 
         # ---- Blind candidate scores (honest: never a detection claim) ----
         fec_res = score_fec_candidates(bits)
@@ -632,6 +761,10 @@ def analyze_file(request: dict) -> dict:
                 # MODULATION_UNCORROBORATED_CONFIDENCE); None = the check does
                 # not apply to this mode.
                 "corroborated": corroborated,
+                # The classifier's own label when the header search overrode it,
+                # else None. Non-null means `estimated_type` is a *revised*
+                # estimate, not the classifier's answer.
+                "revised_from": revised_from,
             },
             "demodulation": {
                 "mode": mode,

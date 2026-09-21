@@ -69,3 +69,27 @@ FSK_FREQ_HIGH_HZ = 5000.0
 # independent evidence; failing to recover one does not prove the label wrong,
 # so the label is kept and its confidence is capped instead.
 MODULATION_UNCORROBORATED_CONFIDENCE = 0.35
+
+# Confidence reported for a modulation label that was *revised* because the
+# classifier's own choice could not find the sync word.
+#
+# The classifier works from whole-capture statistics, and those are not
+# invariant to how much noise surrounds the burst: a clean BPSK burst is
+# labelled QPSK or 8PSK once enough noise is padded either side of it
+# (measured -- see tests/integration/test_burst_in_noise.py). A wrong label
+# hides the header, so the report would say "no frame found" and point the user
+# at the wrong problem.
+#
+# A significant header correlation under a different demodulation is
+# independent evidence, so the label is revised. The revised label carries this
+# confidence rather than the classifier's original number, because that number
+# described a label which has just been replaced. The value is comparable to the
+# confidence the classifier reports for a label it gets right, but is earned by
+# an independent test rather than by the same statistic.
+MODULATION_HEADER_CORROBORATED_CONFIDENCE = 0.8
+
+#: A different demodulation is only tried when the chosen one saw at least a
+#: hint of the sync word. A pure-noise capture scores exactly 0.0, and retrying
+#: every candidate there would triple the correlation cost on exactly the large
+#: real-world captures the §NFR-03 budget is about -- for no possible gain.
+MODULATION_RETRY_MIN_SCORE = 0.0
