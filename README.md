@@ -25,6 +25,7 @@ file and want to know what is inside it, start at [Quick start](#quick-start).
 - [Analysing many files at once](#analysing-many-files-at-once)
 - [Testing with real radio recordings](#testing-with-real-radio-recordings)
 - [Proving it works](#proving-it-works)
+- [Performance](#performance)
 - [Project layout](#project-layout)
 - [Troubleshooting](#troubleshooting)
 - [How this maps to the problem statement](#how-this-maps-to-the-problem-statement)
@@ -358,8 +359,37 @@ pytest                                        # the full suite (455 tests)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
 python scripts/measure_fec_capability.py      # re-derive the FEC tolerance numbers below
+python scripts/benchmark_performance.py       # re-derive the timings in "Performance"
 $env:QT_QPA_PLATFORM="offscreen"; pytest tests/integration -q   # GUI tests, headless
 ```
+
+---
+
+## Performance
+
+The stated requirement is **1 million samples analysed in under 10 seconds**. Measured
+with `scripts/benchmark_performance.py`, which builds realistic captures (a framed burst
+followed by a noise tail) and times the whole funnel — load, PSD, waterfall,
+demodulation and the decode search:
+
+| Capture | File size | Typical | Observed range |
+|---|---|---|---|
+| 1 million samples | 8 MB | 2.8 s | 1.8 – 4.1 s |
+| 2 million samples | 16 MB | 6.5 s | 4.1 – 12.1 s |
+| 12.5 million samples | 100 MB | 30 s | 29 – 36 s quiet, 499 s under load |
+
+The budget is met with roughly **3–4× headroom**, and cost grows close to linearly with
+the sample count, so about **3 seconds per million samples** is a fair rule of thumb.
+
+**The larger rows are indicative, not guaranteed.** These are wall-clock timings on a
+shared machine and they move with whatever else is running: the 100 MB case measured
+32 s and 31 s back to back, then 36 s and 499 s during a longer batch, with no change in
+the work at all. Only the 1 M row is stable enough to carry a budget. Run the script on
+your own hardware if you need your own numbers — it prints the range, not just a median,
+for exactly this reason.
+
+A capture is read and analysed whole, so a file needs room for it: **8 bytes per sample**
+for the samples themselves, plus working room for the FFTs. There is no streaming mode.
 
 ---
 

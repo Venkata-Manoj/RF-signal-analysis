@@ -50,9 +50,10 @@ python scripts/run_pipeline.py sample_data/bpsk.iq --sample-rate 100000 --iq-for
 python scripts/batch_analyze.py sample_data --csv output/s.csv --html output/s.html
 python scripts/fetch_real_data.py       # real OTA captures (network); --list for sources
 python scripts/measure_fec_capability.py --quick  # re-derive the documented FEC tolerance numbers
+python scripts/benchmark_performance.py  # re-derive the NFR timings (each case in its own process)
 ```
 - Order matters: `install → generate_test_data → pytest`. Integration tests read `sample_data/bpsk.iq|bpsk.wav` and fail if data wasn't generated.
-- Perf budget (NFR): ≤100 MB files, 1–2 M samples responsive, 1 M samples <10 s. No RF hardware needed for tests; only `fetch_real_data.py` touches the network.
+- Perf budget (NFR): ≤100 MB files, 1–2 M samples responsive, 1 M samples <10 s. **Measured** (`scripts/benchmark_performance.py`, `complex64`, realistic burst-in-noise captures): 1 M → 2.8 s median (1.8–4.1 s) **PASS with ~3–4× headroom**; 2 M → 6.5 s (4.1–12.1 s); 100 MB / 12.5 M → 30 s quiet (30–32 s back to back) but **499 s under external load on the same machine**. So only the 1 M row carries a budget — report the *range*, never a single number: absolute wall-clock here moves by 15× with machine load and no change in the work. Measure each case in its own process; running several large analyses back to back in one process inflates the later ones (the 2 M case read 10.4 s behind the 1 M repeats against 4.1 s isolated). No RF hardware needed for tests; only `fetch_real_data.py` touches the network.
 - Decode search is bounded by `DECODE_MAX_BITS`/`DECODE_TIME_BUDGET_S` (per-request overridable via `decode_max_bits`/`decode_time_budget_s`). Correctness tests pass generous budgets so a loaded machine cannot decide a result.
 
 ## Gotchas

@@ -48,3 +48,11 @@ exact message, and all four modulations decode end to end. Error loads are chose
 per scheme, inside each scheme's measured tolerance — LDPC correction is
 probabilistic, so a load at the edge of capability tests luck rather than the
 pipeline.
+
+The `info.md` performance budget is measured by
+`python scripts/benchmark_performance.py` (realistic burst-in-noise captures, each
+case in its own process): **1 M samples in 2.8 s median (1.8–4.1 s)** against a
+10 s budget, 2 M in 6.5 s, and a 100 MB / 12.5 M-sample file in 30 s without
+crashing. Only the 1 M row is stable enough to carry a budget — the 100 MB case was
+observed at 499 s under external load on the same machine, so the range is the
+measurement.
