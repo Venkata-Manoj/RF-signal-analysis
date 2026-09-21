@@ -28,6 +28,15 @@ jobs:
         run: |
           python scripts/generate_test_data.py
 
+      - name: Lint and format check
+        run: |
+          ruff check scripts/ tests/ src/
+          black --check scripts/ tests/ src/
+
       - name: Run tests
         run: |
           pytest -q
+
+      - name: Verify the MVP end to end
+        run: |
+          python scripts/verify_mvp.py
