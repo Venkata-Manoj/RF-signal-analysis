@@ -36,6 +36,7 @@ from rf_analyzer.core.fec import (
     rs_check,
     rs_decode,
     rs_encode,
+    scan_crc16_strict,
     viterbi_decode,
 )
 
@@ -91,6 +92,48 @@ def test_crc16_append_check_roundtrip_and_detection():
 def test_crc16_check_rejects_short_input():
     ok, payload = crc16_check(b"\x01")
     assert ok is False and payload == b"\x01"
+
+
+def test_crc_framing_prefers_the_shorter_payload_over_a_one_byte_collision():
+    """The documented deterministic false positive must never win.
+
+    For CRC-16/CCITT-FALSE the identity ``crc16(M || C_hi) == C_lo << 8`` holds,
+    so whenever the byte following a real frame is ``0x00`` -- which is exactly
+    what block-interleaver zero fill supplies -- the framing one byte *longer*
+    validates too. Scanning shortest-first is what rejects it, and that only
+    works while the true end stays inside the candidate window.
+
+    Regression: with the frame followed by 33 zero bytes the window's lower edge
+    landed precisely on the collision, so the truth was invisible and the scan
+    returned a CRC-verified payload carrying one extra trailing byte (the real
+    CRC's high byte). A wrong payload reported as verified is the worst possible
+    failure mode here, hence the one-byte lookback in ``_candidate_ends``.
+    """
+    message = b"SIH26147 framing regression payload for the CRC lookback."
+    framed = crc16_append(message)
+    assert crc16_check(framed) == (True, message)
+
+    # The identity that creates the collision, asserted rather than assumed.
+    crc = crc16_ccitt(message)
+    c_hi, c_lo = crc >> 8, crc & 0xFF
+    assert framed == message + bytes([c_hi, c_lo])
+    assert crc16_ccitt(message + bytes([c_hi])) == (c_lo << 8)
+
+    # 33 zero bytes put the window's lower edge one byte past the true end.
+    buf = framed + b"\x00" * 33
+    assert len(buf) - 32 == len(framed) + 1
+
+    ok, payload = scan_crc16_strict(buf)
+    assert ok is True
+    assert payload == message, f"extra trailing bytes: {payload[len(message):]!r}"
+
+
+def test_crc_framing_still_scans_normally_inside_the_window():
+    """The lookback must not disturb the ordinary case."""
+    message = b"short"
+    framed = crc16_append(message)
+    ok, payload = scan_crc16_strict(framed + b"\x00" * 4)
+    assert (ok, payload) == (True, message)
 
 
 # --------------------------------------------------------------------------- #

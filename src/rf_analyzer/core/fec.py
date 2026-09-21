@@ -132,11 +132,23 @@ def _candidate_ends(buf: bytes, min_payload: int, window: int | None) -> list[in
     ``window`` restricts the search to positions near the end of the buffer,
     which is where a frame ends once the zero fill a block interleaver appends
     has been accounted for. ``None`` scans the whole buffer.
+
+    The window is widened by one byte at the bottom so the shortest-first rule
+    above can always do its job. The deterministic false positive is exactly one
+    byte *longer* than the truth, so the false positive is reachable only when
+    the true end is at ``lo - 1``: leave that position out and the false positive
+    becomes the first (and only) match, which is how a capture whose frame is
+    followed by a non-zero tail once returned a CRC-verified payload with one
+    extra trailing byte -- the real CRC's high byte. One byte of lookback is
+    exactly enough (``true_end >= lo - 1`` is precisely the condition under which
+    the collision can be seen at all), and it removes the whole class. The cost
+    is a single extra candidate position (~1/65536 of false-positive risk), which
+    is nothing next to reporting a wrong payload as verified.
     """
     n = len(buf)
     lo = min_payload + 2
     if window is not None:
-        lo = max(lo, n - window)
+        lo = max(lo, n - window - 1)
     ends = list(range(lo, n + 1))
 
     # Safety net: the padding-stripped end is the structurally cleanest anchor,
@@ -190,8 +202,9 @@ def scan_crc16_strict(
     check (valid RS codeword, LDPC syndrome) backs the CRC up.
 
     Keeping the search inside a short window holds the false-positive rate near
-    ``max_pad / 65536`` while still tolerating padding whose last byte happens to
-    be non-zero.
+    ``(max_pad + 1) / 65536`` -- the ``+1`` is the one-byte lookback
+    :func:`_candidate_ends` needs to keep the shortest-first rule effective --
+    while still tolerating padding whose last byte happens to be non-zero.
     """
     buf = bytes(buf)
     n = len(buf)
