@@ -16,6 +16,7 @@ import json
 import math
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -653,14 +654,53 @@ def check_real_captures(checks: Checks) -> None:
         )
 
 
+def _require_dev_dependencies() -> None:
+    """Fail with an actionable message when the test runner is not installed.
+
+    This harness is the documented way to prove the MVP works, and it runs the
+    test suite -- but the runner lives in ``requirements-dev.txt``, which is a
+    separate install from the runtime ``requirements.txt``. Without this check the
+    failure is a bare ``No module named pytest`` printed under a ``FAIL``, which
+    reads like a broken project rather than a missing optional install.
+
+    Exits 2, distinct from the exit-1 a genuine check failure uses, so a caller can
+    tell "the project is broken" from "you did not install the dev requirements".
+    """
+    try:
+        import pytest
+    except ImportError:
+        print(
+            "pytest is not installed, so the test suite cannot run.\n"
+            "\n"
+            "It is in requirements-dev.txt, which is separate from the runtime\n"
+            "requirements. Install it with:\n"
+            "\n"
+            f"    {Path(sys.executable).name} -m pip install -r requirements-dev.txt\n"
+            "\n"
+            "requirements.txt alone is enough to *use* the tool; the dev requirements\n"
+            "are only needed to run its tests and this verification harness."
+        )
+        sys.exit(2)
+
+
 def main() -> int:
     print("=== RF Analyzer MVP Verification ===")
+    _require_dev_dependencies()
 
     print("[1/5] Generating synthetic data...")
     run_command([sys.executable, "scripts/generate_test_data.py"])
 
     print("[2/5] Running pytest...")
-    run_command([sys.executable, "-m", "pytest", "-q"])
+    # An explicit, fresh basetemp outside the project. Left to itself pytest
+    # *prunes* old basetemps it finds, which is a bulk delete of directories this
+    # harness does not own -- and where deletions are budgeted or guarded, that
+    # prune can kill the test runner mid-session and surface here as a FAIL on a
+    # suite that actually passed (observed: every test file reaching 100% with
+    # zero failures, then a non-zero exit from the prune). An explicit basetemp
+    # makes pytest skip pruning entirely, so the harness only ever writes inside
+    # its own temp directory.
+    pytest_tmp = Path(tempfile.mkdtemp(prefix="rf_verify_"))
+    run_command([sys.executable, "-m", "pytest", "-q", f"--basetemp={pytest_tmp}"])
 
     print("[3/5] Running MVP pipeline checks...")
     checks = Checks()

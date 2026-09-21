@@ -63,6 +63,9 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 
+# Optional — only needed to run the test suite and the verification harness
+python -m pip install -r requirements-dev.txt
+
 # Create the sample signals used by the demos and tests
 python scripts/generate_test_data.py
 
@@ -79,6 +82,7 @@ On macOS or Linux the only difference is the activation step:
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt   # optional: tests + verification only
 python scripts/generate_test_data.py
 python scripts/serve_dashboard.py --open
 ```
@@ -333,11 +337,14 @@ if you want more material for a live demo.
 python scripts/verify_mvp.py
 ```
 
+*(Needs the optional `requirements-dev.txt` install from
+[Quick start](#quick-start) — it runs the test suite. If you skipped it, the harness
+says so and exits `2` rather than failing obscurely.)*
+
 This regenerates the test data, runs the whole test suite, and then performs **57
 individual checks** end to end — it prints that count itself, so the number here
 cannot drift away from what actually ran. It prints `PASS` and exits `0` only if
 every one succeeds. It covers, among others:
-
 - the core pipeline on a clean BPSK capture (BER < 0.01, correlation > 0.9)
 - all six coded captures decoding back to the **exact transmitted message**, with the
   transmitter's FEC scheme and interleaver identified from the bit stream alone (the test
@@ -355,7 +362,7 @@ every one succeeds. It covers, among others:
 Other useful commands:
 
 ```powershell
-pytest                                        # the full suite (455 tests)
+pytest                                        # the full suite (456 tests)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
 python scripts/measure_fec_capability.py      # re-derive the FEC tolerance numbers below
@@ -451,6 +458,13 @@ The server is not running. Start it with `python scripts/serve_dashboard.py`.
 
 **Nothing appears in `sample_data/`**
 Run `python scripts/generate_test_data.py` first. The integration tests need it.
+
+**`verify_mvp.py` says "pytest is not installed"**
+The test runner is an optional install, deliberately kept out of the runtime
+requirements so you do not need it just to *use* the tool. Add it with
+`python -m pip install -r requirements-dev.txt`. The harness detects this case and
+exits `2` (rather than `1`, which means a check actually failed) so a script can tell
+the two apart.
 
 **`python3` not found on Windows**
 Use `python`, not `python3`.
