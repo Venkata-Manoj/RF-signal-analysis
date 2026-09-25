@@ -54,8 +54,7 @@ CAPTURES: tuple[dict, ...] = (
         "signal": "GPS L1 C/A downlink (spread-spectrum BPSK)",
         "note": (
             "10 ms at 4 MHz. BPSK at 1.023 Mcps with a large carrier offset "
-            "and no carrier recovery in the MVP, so the constellation does not "
-            "close -- the pipeline is expected to flag a poor modulation fit."
+            "that an unlocked capture cannot close -- the pipeline is expected to flag a poor modulation fit."
         ),
     },
     {

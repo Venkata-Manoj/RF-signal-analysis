@@ -22,6 +22,16 @@ real_data/*
 
 # Agent working memory / scratch for this project (not source).
 .workbuddy-ai/
-
+.agents/
+agent/
+.freebuff/
+.opencode/
+.claude/
+brag-output
 # Presentation + documentation deliverables: presentation material only, not source.
 deliverables/
+
+# Local master handoff doc (comprehensive TXT, not source, per user request).
+PROJECT_HANDOFF.txt
+info.md
+description.txt

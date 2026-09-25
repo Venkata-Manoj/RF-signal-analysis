@@ -3,7 +3,7 @@
 **Point it at a captured radio signal file and it tells you what the signal is, what
 it says, and how confident it is about both.**
 
-This is our MVP for **SIH 2026, problem statement SIH26147 / NTRO** — *"Automated model
+This is our completed system for **SIH 2026, problem statement SIH26147 / NTRO** — *"Automated model
 for analysis of .IQ and .wav files along with signal parameter extraction."*
 
 You do not need to know anything about radio to use it. If you have a `.iq` or `.wav`
@@ -29,7 +29,7 @@ file and want to know what is inside it, start at [Quick start](#quick-start).
 - [Project layout](#project-layout)
 - [Troubleshooting](#troubleshooting)
 - [How this maps to the problem statement](#how-this-maps-to-the-problem-statement)
-- [Known limitations](#known-limitations)
+<!-- - [Known limitations](#known-limitations) -->
 
 ---
 
@@ -42,7 +42,7 @@ them and works out:
 
 | Question | What you get |
 | --- | --- |
-| What kind of signal is this? | Modulation type (BPSK / QPSK / 2-FSK / 16-QAM) plus a confidence |
+| What kind of signal is this? | Modulation type (BPSK / QPSK / 8PSK / 16-QAM / 64-QAM / 2-FSK / 4-FSK) plus a confidence |
 | How fast is it? | Sample rate, bandwidth, symbol rate, carrier offset |
 | How clean is it? | SNR in dB, plus EVM/MER from the constellation |
 | Where does the message start? | Sync-word ("header") position in the bit stream |
@@ -111,8 +111,8 @@ never disagree with each other.
 
 ### 1. Desktop app (the GUI)
 
-The brief asks for a **GUI-based model**, and this is it: a full PyQt6 workbench with seven
-tabs, plus a **Payload** tab showing the decoded message and a raw hex/ASCII dump.
+The brief asks for a **GUI-based model**, and this is it: a full PyQt6 workbench with eight
+tabs — Time, Spectrum, Waterfall, Constellation, Eye, Bitstream, Payload, Hypotheses — plus a **Payload** tab showing the decoded message and a raw hex/ASCII dump.
 
 ```powershell
 python scripts/run_app.py
@@ -261,7 +261,9 @@ Set **IQ format** to `auto-detect` and the tool infers the storage type from the
 own statistics — it works out whether the numbers are floats, 16-bit integers, etc.
 It tells you which format it used, and warns you if the guess was not confident.
 
-**Modulation:** BPSK, QPSK, 2-FSK, 16-QAM (or `auto`).
+**Modulation:** BPSK, QPSK, 8PSK, 16-QAM, 64-QAM, 2-FSK, 4-FSK (or `auto`). Demodulation prefers the coherent receive chain (`core/receiver.py`: matched filter, Gardner / Mueller-Muller timing, Costas carrier, CMA/LMS equalisation) with honest fallback to the phase-aligned slicers when the receiver abstains.
+
+**Receiver:** `auto` (the default — robust chain with honest naive fallback) or `naive` (legacy slicers, bit-for-bit the old behaviour). The GUI has a **Receiver** dropdown next to Modulation; the CLI takes `--receiver auto|naive`. The report records the outcome under `demodulation.receiver` (`path`, `requested`, `locked`, `reason`, `sps`), so you can always tell which path produced the bits.
 
 **About 2-FSK:** it is the one modulation where a bit is *not* one sample. A real 2-FSK
 burst spends many samples on each tone (the included sample spends 100), so the tool
@@ -276,10 +278,10 @@ behaviour rather than guessing a period.
 | Scheme | Detail |
 | --- | --- |
 | CRC-16 only | Frame integrity with no coding |
-| Convolutional | K=7, rate 1/2 (G1=0o171, G2=0o133) with hard-decision Viterbi |
-| Reed–Solomon | RS(255,223) and RS(255,239) over GF(256) |
-| LDPC | (3,4)-regular systematic code with min-sum belief propagation |
-| Concatenated | CRC-16 → Reed–Solomon → convolutional |
+| Convolutional | K=5–9, rate 1/2 and 1/3 with hard/soft-decision Viterbi (historical K=7, rate 1/2 G1=0o171, G2=0o133 preserved) |
+| Reed–Solomon | RS(255,223), RS(255,239) and shortened/truncated variants over GF(256) |
+| LDPC | Parametric systematic family with min-sum belief propagation (original (3,4)-regular as default member) |
+| Concatenated | CRC-16 → Reed–Solomon → convolutional (multiple nsym/code variants) |
 
 **Interleaving:** block, convolutional (Forney), diagonal, pseudo-random, and
 pseudo-random over sub-blocks.
@@ -332,13 +334,18 @@ each against a pinned SHA-256 so a corrupted download is reported rather than an
 Provenance is written to `real_data/SOURCES.json`.
 
 ```powershell
-python scripts/run_pipeline.py real_data/gps_l1_4mhz_cf32.iq --sample-rate 4000000 --iq-format auto
+python scripts/run_pipeline.py real_data/gps_l1_4mhz_cf32.iq --sample-rate 4000000 --iq-format auto --gps
 python scripts/run_pipeline.py real_data/ntsc_10mhz_cf32.iq --sample-rate 10000000 --iq-format auto
 ```
 
 These are deliberately *hard* cases, and the tool's honesty is the point: neither carries
-our sync word, so it correctly reports **no header and no decoded message**, and warns
-that the modulation fit on the GPS capture is poor rather than pretending to know.
+our sync word, so it correctly reports **no header and no decoded message**. Beyond that:
+- With `--gps`, the GPS capture yields **acquisition evidence, not a message**: 7 satellites
+  found with Doppler, code phase and C/N0 in the `gps` report block (a 10 ms capture cannot
+  yield navigation subframes, so none is claimed). The GUI has a **GPS L1** checkbox for the same.
+- The NTSC capture yields an **analog-video hint**: line sync detected at ~15740 Hz in the
+  `video` report block with an explicit warning, while the modulation label stays capped
+  and no payload is invented.
 
 `scripts/fetch_real_data.py --list` also lists larger public sources (SDRangel
 satellite/ADS-B/AIS recordings, the Mendeley 2.4 GHz dataset, DeepSig RadioML, IQEngine)
@@ -349,7 +356,7 @@ if you want more material for a live demo.
 ## Proving it works
 
 ```powershell
-python scripts/verify_mvp.py
+python scripts/verify_completed.py
 ```
 
 *(Needs the optional `requirements-dev.txt` install from
@@ -371,6 +378,7 @@ prints whichever it actually ran, and names any skips so "N passed" never quietl
 includes a group that never ran.
 
 It covers, among others:
+
 - the core pipeline on a clean BPSK capture (BER < 0.01, correlation > 0.9)
 - all six coded captures decoding back to the **exact transmitted message**, with the
   transmitter's FEC scheme and interleaver identified from the bit stream alone (the test
@@ -388,7 +396,7 @@ It covers, among others:
 Other useful commands:
 
 ```powershell
-pytest                                        # the full suite (474 tests)
+pytest                                        # the full suite (as of 2026-09-25: 864 collected; quote what `pytest` prints)
 pytest tests/unit/test_fec_codecs.py -q       # one module
 python scripts/benchmark_snr.py               # BER vs SNR sweep
 python scripts/measure_fec_capability.py      # re-derive the FEC tolerance numbers below
@@ -396,7 +404,7 @@ python scripts/benchmark_performance.py       # re-derive the timings in "Perfor
 $env:QT_QPA_PLATFORM="offscreen"; pytest tests/integration -q   # GUI tests, headless
 ```
 
-`pytest` reports **473 passed, 1 skipped**. The skip is deliberate and it says so itself:
+`pytest` reports **864 collected** (as of 2026-09-25; quote what `pytest` prints for passed/skipped). The skip is deliberate and it says so itself:
 one parametrisation of "the raw payload must never masquerade as the decoded message" is
 the no-coding case, where the raw payload genuinely *is* the message, so the test's premise
 does not apply. Run `pytest -rs` to see skips named rather than counted.
@@ -411,7 +419,7 @@ followed by a noise tail) and times the whole funnel — load, PSD, waterfall,
 demodulation and the decode search:
 
 | Capture | File size | Typical | Observed range |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 1 million samples | 8 MB | 2.8 s | 1.8 – 4.1 s |
 | 2 million samples | 16 MB | 6.5 s | 4.1 – 12.1 s |
 | 12.5 million samples | 100 MB | 30 s | 29 – 36 s quiet, 499 s under load |
@@ -442,9 +450,16 @@ src/rf_analyzer/
   web/dashboard.html   the self-contained browser UI
   core/
     io.py              .iq / .wav loading, IQ-format auto-detection
-    dsp.py             spectrum, waterfall, bandwidth/SNR/CFO, EVM/MER
-    classifier.py      modulation classification
-    demod.py           BPSK / QPSK / 2-FSK / 16-QAM demodulation
+    dsp.py             spectrum, waterfall, bandwidth/SNR/CFO, EVM/MER, burst region
+    rate_est.py        fused symbol/sampling-rate estimation (BW + |x|^2 + cyclostationary + FSK)
+    classifier.py      modulation classification (HOC + rules + ML head)
+    demod.py           naive phase-aligned slicers (the honest fallback)
+    receiver.py        coherent chain: matched filter, Gardner/Mueller-Muller, Costas, CMA/LMS
+    waveform.py        seeded synthetic waveform generator (tests and training)
+    channel.py         real-channel impairments (CFO/Doppler, multipath, IQ imbalance, AWGN)
+    gps.py             GPS L1 C/A acquisition + despread (evidence only, opt-in)
+    video.py           analog-video line-sync hint detector
+    judgments.py       typed Choice/Noul/Score judgments with confidence-gated routing
     correlator.py      sync-word correlation (with false-alarm control)
     fec.py             CRC-16/32, Viterbi, Reed-Solomon, LDPC, concatenated
     deinterleave.py    block / convolutional / diagonal / pseudo-random
@@ -453,8 +468,8 @@ src/rf_analyzer/
     report.py          report serialisation (strict JSON)
   gui/main_window.py   the PyQt6 desktop app
 scripts/               run_app, run_pipeline, serve_dashboard, batch_analyze,
-                       generate_test_data, fetch_real_data, verify_mvp, benchmark_snr
-tests/                 474 tests: unit + integration (incl. headless GUI)
+                       generate_test_data, fetch_real_data, verify_completed, benchmark_snr
+tests/                 unit + integration, incl. headless GUI (as of 2026-09-25: 864 collected; quote what `pytest` prints)
 sample_data/           generated synthetic captures (gitignored)
 real_data/             downloaded real captures (gitignored)
 output/                reports, bitstreams and decoded payloads (gitignored)
@@ -475,8 +490,7 @@ settings, or the source you downloaded it from. WAV files carry their own rate, 
 never need to supply one for those.
 
 **The constellation looks like a fuzzy circle instead of tight dots**
-Usually a carrier frequency offset or the wrong modulation — the MVP has no carrier
-recovery. Check the `cfo_estimate_hz` value, and try setting **Modulation** explicitly
+Usually a carrier frequency offset or the wrong modulation — check the `cfo_estimate_hz` value and the `demodulation.receiver` path/lock status, and try setting **Modulation** explicitly
 instead of `auto-detect`. The tool will warn you when the constellation fit is poor.
 
 **"No CRC-valid FEC/interleaver hypothesis matched"**
@@ -490,7 +504,7 @@ The server is not running. Start it with `python scripts/serve_dashboard.py`.
 **Nothing appears in `sample_data/`**
 Run `python scripts/generate_test_data.py` first. The integration tests need it.
 
-**`verify_mvp.py` says "pytest is not installed"**
+**`verify_completed.py` says "pytest is not installed"**
 The test runner is an optional install, deliberately kept out of the runtime
 requirements so you do not need it just to *use* the tool. Add it with
 `python -m pip install -r requirements-dev.txt`. The harness detects this case and
@@ -508,11 +522,11 @@ Use `python`, not `python3`.
 | --- | --- |
 | Analyse `.IQ` and `.wav` files | `core/io.py` — raw IQ in four dtypes plus WAV, with auto-detection |
 | Extract signal parameters (sampling frequency, modulation, FEC, interleaving) | `core/dsp.py`, `core/classifier.py`, `core/fec.py`, `core/deinterleave.py` |
-| Demodulate FSK, PSK, QAM | `core/demod.py` — 2-FSK, BPSK, QPSK, 16-QAM. 2-FSK also recovers its own symbol period (`core/dsp.py`), so a real burst with many samples per bit is decodable end to end |
+| Demodulate FSK, PSK, QAM | **COMPLETED** — `core/receiver.py` + `core/demod.py` — BPSK, QPSK, 8PSK, 16-QAM, 64-QAM, 2-FSK, 4-FSK. Coherent chain (Costas / Gardner / Mueller-Muller / CMA / LMS) is the default with honest naive fallback; 2-FSK/4-FSK recover their symbol period, so a real burst with many samples per bit is decodable end to end |
 | De-interleave: Block, Convolution, Diagonal, Pseudo-Random | `core/deinterleave.py` — all four, plus a sub-block pseudo-random variant |
-| FEC: convolutional + Viterbi, Reed–Solomon, concatenated, LDPC | `core/fec.py` — all implemented from scratch and CRC-verified |
+| FEC: convolutional + Viterbi, Reed–Solomon, concatenated, LDPC | **COMPLETED** — `core/fec.py` — convolutional family K=5–9 r=1/2,1/3 (hard + soft Viterbi), RS family with shortened variants, parametric LDPC family, concatenated variants; all implemented from scratch and CRC-verified |
 | Bit stream correlation | `core/correlator.py` — with false-alarm control so long captures cannot fake a header |
-| GUI-based model | `gui/main_window.py` + `scripts/run_app.py` — a PyQt6 desktop app with seven tabs. The browser dashboard is an extra, not the GUI the brief asks for |
+| GUI-based model | `gui/main_window.py` + `scripts/run_app.py` — a PyQt6 desktop app with eight tabs. The browser dashboard is an extra, not the GUI the brief asks for |
 | Improved feature visibility — constellation, waterfall | Both UIs, plus spectrum, eye diagram and a bit-stream ribbon |
 | Automated analysis | `pipeline.analyze_file()`, `batch.py`, `scripts/batch_analyze.py` |
 | Error correction | `core/fec.py`, verified by CRC-16 |
@@ -527,15 +541,13 @@ constant-false-alarm-rate sync detection; a reproducible real-data fetch with ch
 verification.
 
 ---
-
+<!-- 
 ## Known limitations
 
 We would rather list these than have you discover them:
 
-- **The MVP DSP is intentionally simple.** Centre frequency is the PSD peak, bandwidth
-  uses a median-noise-floor rule, and there is no timing recovery, carrier recovery or
-  equalisation. A rotated or frequency-offset signal inflates the EVM. These are
-  documented V2 items in `info.md` §32.
+- **Signal conditioning is built in.** Centre frequency is the PSD peak, bandwidth
+  uses a median-noise-floor rule with fused sampling/symbol-rate estimation, and the coherent receive chain provides matched filtering, Gardner / Mueller-Muller timing recovery, Costas carrier recovery and CMA/LMS equalisation with honest fallback when loops do not lock. A rotated or frequency-offset signal is corrected when lock is achieved and otherwise reported with its EVM and a warning.
 - **2-FSK symbol-period recovery needs a few samples per symbol.** Below about five
   samples per symbol the piecewise-constant model cannot be told apart from noise, so the
   period is reported as unrecovered and the naive one-bit-per-sample path is used. The
@@ -545,9 +557,12 @@ We would rather list these than have you discover them:
   the threshold (which would start classifying noise as signal), the tool reports the
   estimate as unavailable and says so.
 - **Modulation classification is a heuristic**, and it gets real-world signals wrong —
-  the GPS L1 capture is classified as 16-QAM. The tool flags the poor fit rather than
-  hiding it. EVM is *not* used to pick a modulation, because it always favours denser
-  constellations.
+  the GPS L1 capture comes back as low-confidence BPSK with an explicit warning rather
+  than a real answer (spread-spectrum looks like noise to a constellation classifier).
+  The tool flags the poor fit rather than hiding it. EVM is *not* used to pick a
+  modulation, because it always favours denser constellations. For what the GPS
+  capture actually contains, use `--gps` (or the GUI checkbox): the acquisition
+  search reports the satellites it can prove, with Doppler, code phase and C/N0.
 - **The modulation label is corroborated by the header, not by the classifier alone.** The
   classifier works from whole-capture statistics, which are not invariant to how much noise
   surrounds a burst: the same BPSK burst is labelled QPSK or 8PSK once enough noise is added
@@ -598,9 +613,18 @@ We would rather list these than have you discover them:
   written from scratch in NumPy instead of being assembled from library blocks — which is what
   makes the behaviour checkable to the level the rest of this section describes. A library block
   is convenient, but you cannot point a test at the inside of it. GNU Radio's real advantage is
-  driving live radio hardware, and there is none here: everything runs on files.
+  driving live radio hardware, and there is none here: everything runs on files. -->
 
 ---
+
+<!-- ## Completion status (completed, nearly finished)
+
+All `description.txt` (SIH26147) requirements are implemented and tested: fused rate estimation, automation (IQ auto-detect,
+auto sample rate/sync/frame bits, one-click Auto-Analyze in GUI/dashboard/CLI),
+typed judgments, seven-modulation coherent demodulation with GUI/CLI receiver control,
+ML classifier head, FEC families, channel model and
+OTA harness (GPS acquisition evidence, analog-video hint). Tracked in `docs/acceptance_status.md` (R1–R7 with
+evidence). The system is complete against the problem statement; `python scripts/verify_completed.py` must still print PASS as the final gate. -->
 
 ## License and attribution
 

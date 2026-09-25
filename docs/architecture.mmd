@@ -1,0 +1,51 @@
+%% RF Signal Analysis Workbench — as-built architecture (Mermaid source)
+%% ----------------------------------------------------------------
+%% Sources (single source of truth chain):
+%%   - Original plan:  info.md §7.1 (ASCII boxes: GUI → Analysis Pipeline → Core)
+%%   - As-built rule:  deliverables/RF_Signal_Analysis_Workbench.md §3.1
+%%                     (pipeline.analyze_file() is the ONLY analysis site)
+%%   - As-built flow:  RF_Signal_Analysis_Workbench.md §3.2 (10 stages) and
+%%                     deliverables/slides.html slide 5 ("From file to verdict")
+%%   - V2 roadmap:     slides.html slide 17 / RF doc §9 (NOT part of this diagram)
+%%
+%% Render / export (no repo dependency required):
+%%   1. Paste this file into https://mermaid.live → Export PNG/SVG, or
+%%   2. `npx @mermaid-js/mermaid-cli -i docs/architecture.mmd -o arch.png` (needs node, optional), or
+%%   3. Use the checked-in pre-rendered copy: docs/architecture.svg
+%%      (hand-drawn from the same flow so the deck builds with zero tooling).
+%% Insert into PPT: Insert → Pictures → docs/architecture.svg (or the exported PNG).
+
+flowchart LR
+    subgraph IN["Inputs"]
+        IQ["capture file<br/>.iq / .wav<br/>+ sample rate<br/>(required for .iq)"]
+    end
+
+    subgraph PIPE["pipeline.analyze_file(request) → report dict — the ONLY analysis site"]
+        direction LR
+        S1["1 · Load<br/>core/io.py"]
+        S2["2 · Spectral<br/>core/dsp.py"]
+        S3["3 · Burst region<br/>dsp.estimate_burst_region"]
+        S4["4 · Classify<br/>core/classifier.py"]
+        S5["5 · Demodulate<br/>core/demod.py"]
+        S6["6 · Corroborate<br/>pipeline._corroborate_modulation"]
+        S7["7 · Correlate<br/>core/correlator.py"]
+        S8["8 · De-interleave × FEC<br/>decode_hypotheses + CRC-16 gate"]
+        S9["9 · Payload<br/>core/payload.py"]
+        S10["10 · Serialise<br/>json_safe + allow_nan=False"]
+        S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8 --> S9 --> S10
+    end
+
+    subgraph OUT["Thin consumers — no DSP logic, never disagree"]
+        GUI["GUI (PyQt6)<br/>gui/main_window.py"]
+        WEB["Web dashboard<br/>web/dashboard.html"]
+        CLI["CLI / batch<br/>run_pipeline.py / batch_analyze.py"]
+    end
+
+    IQ --> S1
+    S10 -->|report dict · strict JSON<br/>error ≡ success shape| GUI
+    S10 -->|report dict · strict JSON| WEB
+    S10 -->|report dict · strict JSON| CLI
+
+    style PIPE fill:#e8f1ff,stroke:#1f6feb
+    style S8 fill:#e6f6ec,stroke:#2da44e
+    style S10 fill:#fff4d6,stroke:#b88700

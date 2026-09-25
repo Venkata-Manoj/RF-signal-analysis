@@ -12,6 +12,7 @@ from rf_analyzer.batch import (
     analyze_folder,
     discover_captures,
     render_html,
+    sanitize_csv_cell,
     summarize_report,
     write_csv,
     write_html,
@@ -174,6 +175,39 @@ class TestCsvExport:
     def test_creates_parent_directories(self, tmp_path):
         out = write_csv([], tmp_path / "deep" / "nested" / "s.csv")
         assert out.exists()
+
+    def test_formula_cells_are_single_quote_prefixed(self, tmp_path):
+        """OWASP CSV injection: = + - @ | % cells must not execute as formulas."""
+        rows = [
+            {
+                "file": "=2+2",
+                "decoded_text": "@SUM(A1:A2)",
+                "warnings": "-2+3",
+                "errors": "+cmd|' /C calc'!A0",
+            },
+        ]
+        out = write_csv(rows, tmp_path / "s.csv")
+        with open(out, encoding="utf-8-sig", newline="") as handle:
+            written = list(csv.DictReader(handle))
+        assert written[0]["file"] == "'=2+2"
+        assert written[0]["decoded_text"] == "'@SUM(A1:A2)"
+        assert written[0]["warnings"] == "'-2+3"
+        assert written[0]["errors"] == "'+cmd|' /C calc'!A0"
+
+    def test_sanitize_csv_cell_prefixes_all_triggers(self):
+        assert sanitize_csv_cell("=2+2") == "'=2+2"
+        assert sanitize_csv_cell("@SUM(A1:A2)") == "'@SUM(A1:A2)"
+        assert sanitize_csv_cell("-2+3") == "'-2+3"
+        assert sanitize_csv_cell("+cmd") == "'+cmd"
+        assert sanitize_csv_cell("|pipe") == "'|pipe"
+        assert sanitize_csv_cell("%pct") == "'%pct"
+        # Leading whitespace is still a formula once trimmed by the sheet.
+        assert sanitize_csv_cell("   =2+2") == "'   =2+2"
+        # Benign cells pass through untouched.
+        assert sanitize_csv_cell("BPSK") == "BPSK"
+        assert sanitize_csv_cell("") == ""
+        assert sanitize_csv_cell(42) == 42
+        assert sanitize_csv_cell(None) is None
 
 
 class TestHtmlExport:

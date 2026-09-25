@@ -54,14 +54,13 @@ def estimate_bandwidth(
     should treat ``0.0`` as "estimate unavailable" and say so rather than
     propagating it as a measurement.
 
-    Known MVP limitation (§12, §32): the median-floor premise assumes the
+    Known limitation: the median-floor premise assumes the
     signal peaks well above a flat noise floor. That does not hold for
     flat-spectrum modulations such as QPSK, where ``max - median`` for a real
     signal (~10.3 dB) is no larger than for pure noise (~11.0 dB). Lowering
     the threshold therefore does *not* separate signal from noise -- it just
-    starts classifying noise as a wideband signal. A robust bandwidth
-    estimator (e.g. a Welch-averaged noise-floor subtraction or a
-    symbol-rate-derived estimate) is V2 work.
+    starts classifying noise as a wideband signal. The fused estimator in
+    ``core/rate_est.py`` combines this with independent evidence paths.
     """
     freqs = np.asarray(freqs)
     psd_db = np.asarray(psd_db)
@@ -88,7 +87,7 @@ def estimate_snr(psd_db: np.ndarray) -> float:
 def estimate_sampling_rate(bandwidth_estimate: float, factor: float = 2.2) -> float:
     """Naive sampling-rate hint: bandwidth * factor.
 
-    MVP heuristic only (NTRO gap): for a band-limited signal the Nyquist
+    Heuristic (NTRO gap): for a band-limited signal the Nyquist
     minimum is ``2 * BW``; ``factor=2.2`` adds ~10% guard margin for the
     median-floor :func:`estimate_bandwidth` bias and filter roll-off.
 
@@ -98,7 +97,8 @@ def estimate_sampling_rate(bandwidth_estimate: float, factor: float = 2.2) -> fl
     :func:`estimate_symbol_rate`), use
     :func:`estimate_sampling_rate_wideband`.
 
-    Never claim precision — V2 will add cyclostationary hypothesis testing.
+    Never claim precision — the fused estimator in ``core/rate_est.py`` adds
+    cyclostationary hypothesis testing.
     """
     if bandwidth_estimate is None or bandwidth_estimate <= 0:
         return 0.0
@@ -280,7 +280,7 @@ def estimate_fsk_symbol_period(
         return 1
 
     # Autocorrelation via FFT; only lag 1 is used (best SNR, still in the
-    # linear region for every period the MVP supports).
+    # linear region for every period the estimator supports).
     nfft = 1 << int(np.ceil(np.log2(2 * centred.size)))
     spectrum = np.fft.rfft(centred, nfft)
     autocorr = np.fft.irfft(spectrum * np.conj(spectrum), nfft)
@@ -383,7 +383,7 @@ def estimate_and_correct_cfo(
 
     Calls :func:`estimate_cfo` to get the residual carrier offset in Hz,
     then :func:`correct_cfo` to remove it. Naive phase-slope estimator —
-    same MVP caveats as :func:`estimate_cfo` (works on clean tones/PSK,
+    same caveats as :func:`estimate_cfo` (works on clean tones/PSK,
     not a PLL replacement).
 
     Returns:
@@ -578,9 +578,10 @@ def compute_evm(
     sanity check: a wrong ``mode`` forces large errors, so a low EVM is
     independent evidence that the modulation guess is right.
 
-    Caveat (MVP): no equalisation or carrier recovery, so a rotated or
+    Caveat: this EVM path applies no equalisation or carrier recovery, so a rotated or
     frequency-offset signal inflates EVM. Use :func:`estimate_and_correct_cfo`
-    first when that matters.
+    first when that matters (the coherent chain in ``core/receiver.py`` handles
+    this by default).
 
     Returns:
         ``{"applicable", "mode", "modulation_order", "evm_percent",

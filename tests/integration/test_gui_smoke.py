@@ -26,9 +26,9 @@ def test_main_window_opens():
 
     # Act
     window = MainWindow()
-    window.setWindowTitle("RF Signal Analyzer MVP")
+    window.setWindowTitle("RF Signal Analyzer")
 
     # Assert
-    assert window.windowTitle() == "RF Signal Analyzer MVP"
+    assert window.windowTitle() == "RF Signal Analyzer"
 
     window.close()

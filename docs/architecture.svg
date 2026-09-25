@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 640" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="As-built pipeline architecture: file to verdict in ten stages">
+  <!-- RF Signal Analysis Workbench — as-built architecture (pre-rendered, zero-tooling copy).
+       Source of flow: deliverables/slides.html slide 5 + RF_Signal_Analysis_Workbench.md §3.1/§3.2.
+       Original plan: info.md §7.1 ASCII. Mermaid source: docs/architecture.mmd.
+       Export: this file inserts directly into PPT (Insert > Pictures); print/PDF as-is. -->
+  <style>
+    .title { font-size: 26px; font-weight: 700; fill: #111111; }
+    .sub { font-size: 14px; fill: #555555; }
+    .banner { fill: #eef4ff; stroke: #1f6feb; stroke-width: 1.5; rx: 10; }
+    .banner-t { font-size: 15px; fill: #0a3069; }
+    .banner-t b { font-weight: 700; }
+    .node { fill: #ffffff; stroke: #333333; stroke-width: 1.5; rx: 10; }
+    .node-hot { fill: #eefbef; stroke: #2da44e; stroke-width: 2; rx: 10; }
+    .node-out { fill: #fff8e1; stroke: #b88700; stroke-width: 2; rx: 10; }
+    .node-t { font-size: 17px; font-weight: 700; fill: #111111; }
+    .node-m { font-size: 13px; font-family: Consolas, Menlo, monospace; fill: #666666; }
+    .arrow { font-size: 26px; font-weight: 700; fill: #1f6feb; }
+    .wire { stroke: #1f6feb; stroke-width: 2.5; fill: none; }
+    .foot { font-size: 12px; fill: #777777; }
+  </style>
+
+  <text class="title" x="40" y="42">RF Signal Analysis Workbench — from file to verdict in ten stages</text>
+  <text class="sub" x="40" y="66">As-built (slides.html slide 5 · RF_Signal_Analysis_Workbench.md §3.1/§3.2) · original plan: info.md §7.1</text>
+
+  <!-- entry banner -->
+  <rect class="banner" x="40" y="86" width="1140" height="48"/>
+  <text class="banner-t" x="610" y="115" text-anchor="middle">capture file (.iq / .wav) + sample rate  ›  <b>pipeline.analyze_file(request) → report dict</b>  ›  strict JSON (error ≡ success shape)</text>
+
+  <!-- row 1 -->
+  <g>
+    <rect class="node" x="40" y="158" width="196" height="86"/><text class="node-t" x="138" y="190" text-anchor="middle">1 · Load</text><text class="node-m" x="138" y="214" text-anchor="middle">core/io.py</text>
+    <rect class="node" x="276" y="158" width="196" height="86"/><text class="node-t" x="374" y="190" text-anchor="middle">2 · Spectral</text><text class="node-m" x="374" y="214" text-anchor="middle">core/dsp.py</text>
+    <rect class="node" x="512" y="158" width="196" height="86"/><text class="node-t" x="610" y="190" text-anchor="middle">3 · Burst region</text><text class="node-m" x="610" y="214" text-anchor="middle">dsp.py</text>
+    <rect class="node" x="748" y="158" width="196" height="86"/><text class="node-t" x="846" y="190" text-anchor="middle">4 · Classify</text><text class="node-m" x="846" y="214" text-anchor="middle">classifier.py</text>
+    <rect class="node" x="984" y="158" width="196" height="86"/><text class="node-t" x="1082" y="190" text-anchor="middle">5 · Demodulate</text><text class="node-m" x="1082" y="214" text-anchor="middle">demod.py</text>
+    <text class="arrow" x="244" y="212">›</text><text class="arrow" x="480" y="212">›</text><text class="arrow" x="716" y="212">›</text><text class="arrow" x="952" y="212">›</text>
+  </g>
+
+  <!-- wrap connector: end of row 1 → start of row 2 -->
+  <path class="wire" d="M 1082 244 L 1082 276 L 138 276 L 138 304"/>
+  <polygon points="138,316 130,304 146,304" fill="#1f6feb"/>
+
+  <!-- row 2 -->
+  <g>
+    <rect class="node" x="40" y="316" width="196" height="86"/><text class="node-t" x="138" y="348" text-anchor="middle">6 · Corroborate</text><text class="node-m" x="138" y="372" text-anchor="middle">pipeline.py</text>
+    <rect class="node" x="276" y="316" width="196" height="86"/><text class="node-t" x="374" y="348" text-anchor="middle">7 · Correlate</text><text class="node-m" x="374" y="372" text-anchor="middle">correlator.py</text>
+    <rect class="node" x="512" y="316" width="196" height="86"/><text class="node-t" x="610" y="348" text-anchor="middle">8 · De-interleave</text><text class="node-m" x="610" y="372" text-anchor="middle">deinterleave.py</text>
+    <rect class="node-hot" x="748" y="316" width="196" height="86"/><text class="node-t" x="846" y="348" text-anchor="middle">9 · FEC + CRC</text><text class="node-m" x="846" y="372" text-anchor="middle">fec.py (CRC-16 gate)</text>
+    <rect class="node-out" x="984" y="316" width="196" height="86"/><text class="node-t" x="1082" y="348" text-anchor="middle">10 · Payload</text><text class="node-m" x="1082" y="372" text-anchor="middle">payload.py · report.py</text>
+    <text class="arrow" x="244" y="370">›</text><text class="arrow" x="480" y="370">›</text><text class="arrow" x="716" y="370">›</text><text class="arrow" x="952" y="370">›</text>
+  </g>
+
+  <!-- consumers banner -->
+  <rect class="banner" x="40" y="428" width="1140" height="48"/>
+  <text class="banner-t" x="610" y="457" text-anchor="middle">thin consumers, no DSP logic — GUI (PyQt6) · web dashboard · CLI / batch — can never disagree</text>
+
+  <!-- honesty strip -->
+  <rect class="node-out" x="40" y="494" width="1140" height="48"/>
+  <text class="banner-t" x="610" y="523" text-anchor="middle">Honesty gate: blind guesses capped at 0.5 confidence · a decode is shown only after a real CRC-16 pass (validated:true)</text>
+
+  <text class="foot" x="40" y="566">Sources: info.md §7.1 (plan) → as-built: slides.html §5, RF_Signal_Analysis_Workbench.md §3.1/§3.2 · V2 roadmap (slide 17 / doc §9) is future work, not shown.</text>
+  <text class="foot" x="40" y="586">PPT: Insert › Pictures › docs/architecture.svg · Mermaid source: docs/architecture.mmd · render at mermaid.live or mmdc.</text>
+  <text class="foot" x="40" y="606">Design rule: pipeline.analyze_file() is the ONLY analysis site — UIs must call it, never duplicate DSP logic.</text>
+</svg>

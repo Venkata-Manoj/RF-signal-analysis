@@ -21,10 +21,10 @@ import rf_analyzer.config
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_verify_mvp():
-    """Load scripts/verify_mvp.py by path — scripts/ is not an importable package."""
+def _load_verify_completed():
+    """Load scripts/verify_completed.py by path — scripts/ is not an importable package."""
     spec = importlib.util.spec_from_file_location(
-        "verify_mvp", ROOT / "scripts" / "verify_mvp.py"
+        "verify_completed", ROOT / "scripts" / "verify_completed.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -50,11 +50,11 @@ builtins.__import__ = _blocked
 
 
 def test_package_imports():
-    assert rf_analyzer.__version__ == "0.1.0"
+    assert rf_analyzer.__version__ == "1.0.0"
     assert rf_analyzer.config.TOOL_NAME.startswith("RF Signal")
 
 
-def test_verify_mvp_explains_a_missing_dev_install(tmp_path):
+def test_verify_completed_explains_a_missing_dev_install(tmp_path):
     """A missing test runner must name the fix and exit 2, not fail obscurely.
 
     The exit code matters as much as the message: ``1`` means a check genuinely
@@ -63,12 +63,12 @@ def test_verify_mvp_explains_a_missing_dev_install(tmp_path):
     that runs this.
     """
     # `sitecustomize` is auto-imported at interpreter start when it is on the
-    # path, so this blocks pytest in the child before verify_mvp does anything.
+    # path, so this blocks pytest in the child before verify_completed does anything.
     (tmp_path / "sitecustomize.py").write_text(_BLOCK_PYTEST, encoding="utf-8")
     env = {**os.environ, "PYTHONPATH": str(tmp_path)}
 
     proc = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "verify_mvp.py")],
+        [sys.executable, str(ROOT / "scripts" / "verify_completed.py")],
         capture_output=True,
         text=True,
         cwd=str(ROOT),
@@ -96,10 +96,10 @@ def test_verdict_line_never_counts_a_skip_as_passed():
     one of the 49 never ran would be the same overstatement the project refuses to
     make about signals -- so the passed figure subtracts the skips.
     """
-    verify_mvp = _load_verify_mvp()
+    verify_completed = _load_verify_completed()
 
-    assert verify_mvp.verdict_line(57, 0) == "57 individual checks passed."
-    line = verify_mvp.verdict_line(49, 1)
+    assert verify_completed.verdict_line(57, 0) == "57 individual checks passed."
+    line = verify_completed.verdict_line(49, 1)
     assert "48 individual checks passed" in line
     assert "1 skipped" in line
     assert "49 individual checks passed" not in line
@@ -107,8 +107,8 @@ def test_verdict_line_never_counts_a_skip_as_passed():
 
 def test_checks_skip_is_recorded_but_not_a_failure(capsys):
     """A skip counts toward the total, is tracked separately, and is not an error."""
-    verify_mvp = _load_verify_mvp()
-    checks = verify_mvp.Checks()
+    verify_completed = _load_verify_completed()
+    checks = verify_completed.Checks()
 
     checks.check("a real check", True)
     checks.skip("a group that cannot run here", "because reasons")
@@ -126,13 +126,13 @@ def test_real_captures_are_skipped_not_failed_when_absent(tmp_path, capsys):
 
     This is the fresh-clone path: real_data/* is gitignored, so a clone without the
     fetch script must still be able to pass -- otherwise the documented way to prove
-    the MVP works would fail for everyone who did not download 4 MB of recordings.
+    the completed system works would fail for everyone who did not download 4 MB of recordings.
     """
-    verify_mvp = _load_verify_mvp()
-    verify_mvp.ROOT = tmp_path  # an empty repo: no real_data/SOURCES.json
+    verify_completed = _load_verify_completed()
+    verify_completed.ROOT = tmp_path  # an empty repo: no real_data/SOURCES.json
 
-    checks = verify_mvp.Checks()
-    verify_mvp.check_real_captures(checks)
+    checks = verify_completed.Checks()
+    verify_completed.check_real_captures(checks)
 
     assert checks.skipped == 1
     assert checks.total == 1
@@ -157,7 +157,7 @@ def test_report_schema_check_runs_from_any_working_directory(tmp_path, monkeypat
     It then silently does not run: the run still prints PASS, one check lighter,
     and nothing says why. So the check has to produce the artifact it inspects.
     """
-    verify_mvp = _load_verify_mvp()
+    verify_completed = _load_verify_completed()
 
     repo = tmp_path / "repo"
     (repo / "sample_data").mkdir(parents=True)
@@ -166,14 +166,32 @@ def test_report_schema_check_runs_from_any_working_directory(tmp_path, monkeypat
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)  # not the repo: a relative output/ lands here
-    verify_mvp.ROOT = repo
+    verify_completed.ROOT = repo
 
-    checks = verify_mvp.Checks()
-    verify_mvp.check_report_schema(checks)
+    checks = verify_completed.Checks()
+    verify_completed.check_report_schema(checks)
 
     assert checks.total == 5, "every schema check must run, wherever it started"
     assert checks.skipped == 0
     assert checks.ok is True
+
+
+def test_error_and_success_reports_share_top_level_keys(tmp_path):
+    """error_report and success_report must expose exactly TOP_LEVEL_KEYS."""
+    from rf_analyzer.pipeline import TOP_LEVEL_KEYS, analyze_file
+
+    _synthetic_capture(tmp_path / "valid.iq")
+    success_report = analyze_file(
+        {
+            "file_path": str(tmp_path / "valid.iq"),
+            "sample_rate": 100000,
+            "iq_format": "complex64",
+            "modulation": "BPSK",
+        }
+    )
+    error_report = analyze_file({"file_path": str(tmp_path / "missing.xyz")})
+
+    assert set(error_report) == set(success_report) == TOP_LEVEL_KEYS
 
 
 def test_a_missing_generated_capture_fails_loudly_instead_of_vanishing(
@@ -186,15 +204,15 @@ def test_a_missing_generated_capture_fails_loudly_instead_of_vanishing(
     PASS with a smaller total and no explanation -- the same overstatement as
     counting a skip as a pass.
     """
-    verify_mvp = _load_verify_mvp()
+    verify_completed = _load_verify_completed()
 
     repo = tmp_path / "repo"
     (repo / "sample_data").mkdir(parents=True)
     _synthetic_capture(repo / "sample_data" / "fsk2.iq")  # tone.iq deliberately absent
-    verify_mvp.ROOT = repo
+    verify_completed.ROOT = repo
 
-    checks = verify_mvp.Checks()
-    verify_mvp.check_2fsk_symbol_recovery(checks)
+    checks = verify_completed.Checks()
+    verify_completed.check_2fsk_symbol_recovery(checks)
 
     out = capsys.readouterr().out
     tone_lines = [ln for ln in out.splitlines() if "uncorroborated 2-FSK" in ln]
@@ -216,7 +234,7 @@ def test_cleanup_takes_the_derived_artifacts_and_nothing_else(tmp_path):
     artifact. A directory must survive (no recursive delete) and a non-prefixed
     report is not ours to touch.
     """
-    verify_mvp = _load_verify_mvp()
+    verify_completed = _load_verify_completed()
 
     out = tmp_path / "output"
     out.mkdir()
@@ -231,7 +249,7 @@ def test_cleanup_takes_the_derived_artifacts_and_nothing_else(tmp_path):
     (out / "_verify_sweep").mkdir()
 
     proc = subprocess.run(
-        [sys.executable, "-c", verify_mvp._CLEANUP_SNIPPET, str(out / "_verify_a.iq")],
+        [sys.executable, "-c", verify_completed._CLEANUP_SNIPPET, str(out / "_verify_a.iq")],
         capture_output=True,
         text=True,
         cwd=tmp_path,

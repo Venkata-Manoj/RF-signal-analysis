@@ -1,0 +1,523 @@
+{
+  "meta": {
+    "gate": "receiver BER under combined CFO+Doppler+multipath+IQ",
+    "harness": "channel.apply_channel -> receiver.demodulate -> ber_best_rotation",
+    "reference": "tests/integration/test_robust_demod.py:18-52 pattern"
+  },
+  "config": {
+    "schemes": [
+      "BPSK",
+      "QPSK",
+      "8PSK",
+      "16-QAM",
+      "64-QAM",
+      "2-FSK",
+      "4-FSK"
+    ],
+    "conditions": [
+      "clean",
+      "combined-10dB"
+    ],
+    "bars": {
+      "clean": 0.01,
+      "combined-10dB": 0.05
+    },
+    "bar_applies_to": "worst seed per cell",
+    "sps": 8,
+    "n_bits": 3000,
+    "seeds": [
+      3,
+      5,
+      7
+    ],
+    "sample_rate_hz": 1000000.0,
+    "combined": {
+      "cfo_hz": 1500.0,
+      "doppler_rate_hz_s": 8000.0,
+      "multipath": [
+        [
+          0,
+          1.0
+        ],
+        [
+          1,
+          0.3
+        ],
+        [
+          2,
+          0.15
+        ]
+      ],
+      "iq_gain_imb": 0.1,
+      "iq_phase_imb_deg": 5.0,
+      "ebn0_db": 10.0
+    },
+    "strict": false
+  },
+  "known_gap_exceptions": {
+    "schemes": [
+      "16-QAM",
+      "64-QAM",
+      "2-FSK"
+    ],
+    "applies_to": "combined-10dB only",
+    "source": "docs/acceptance_status.md:32"
+  },
+  "cells": [
+    {
+      "scheme": "BPSK",
+      "condition": "clean",
+      "bar": 0.01,
+      "seeds": [
+        {
+          "seed": 3,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 5,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 7,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        }
+      ],
+      "ber_max": 0.0,
+      "ber_mean": 0.0,
+      "status": "PASS",
+      "exception": false
+    },
+    {
+      "scheme": "BPSK",
+      "condition": "combined-10dB",
+      "bar": 0.05,
+      "seeds": [
+        {
+          "seed": 3,
+          "ber": 0.0,
+          "naive_ber": 0.4831272970263949,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 5,
+          "ber": 0.0,
+          "naive_ber": 0.48363393453573816,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 7,
+          "ber": 0.0,
+          "naive_ber": 0.4732977303070761,
+          "locked": true,
+          "path": "coherent"
+        }
+      ],
+      "ber_max": 0.0,
+      "ber_mean": 0.0,
+      "status": "PASS",
+      "exception": false
+    },
+    {
+      "scheme": "QPSK",
+      "condition": "clean",
+      "bar": 0.01,
+      "seeds": [
+        {
+          "seed": 3,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 5,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 7,
+          "ber": 0.00033444816053511704,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        }
+      ],
+      "ber_max": 0.00033444816053511704,
+      "ber_mean": 0.00011148272017837234,
+      "status": "PASS",
+      "exception": false
+    },
+    {
+      "scheme": "QPSK",
+      "condition": "combined-10dB",
+      "bar": 0.05,
+      "seeds": [
+        {
+          "seed": 3,
+          "ber": 0.0,
+          "naive_ber": 0.4749833222148099,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 5,
+          "ber": 0.0,
+          "naive_ber": 0.47565043362241494,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 7,
+          "ber": 0.0,
+          "naive_ber": 0.48465643762508337,
+          "locked": true,
+          "path": "coherent"
+        }
+      ],
+      "ber_max": 0.0,
+      "ber_mean": 0.0,
+      "status": "PASS",
+      "exception": false
+    },
+    {
+      "scheme": "8PSK",
+      "condition": "clean",
+      "bar": 0.01,
+      "seeds": [
+        {
+          "seed": 3,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 5,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 7,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        }
+      ],
+      "ber_max": 0.0,
+      "ber_mean": 0.0,
+      "status": "PASS",
+      "exception": false
+    },
+    {
+      "scheme": "8PSK",
+      "condition": "combined-10dB",
+      "bar": 0.05,
+      "seeds": [
+        {
+          "seed": 3,
+          "ber": 0.0,
+          "naive_ber": 0.4774774774774775,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 5,
+          "ber": 0.0,
+          "naive_ber": 0.48081414748081414,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 7,
+          "ber": 0.00033500837520938025,
+          "naive_ber": 0.47681014347681017,
+          "locked": true,
+          "path": "coherent"
+        }
+      ],
+      "ber_max": 0.00033500837520938025,
+      "ber_mean": 0.00011166945840312675,
+      "status": "PASS",
+      "exception": false
+    },
+    {
+      "scheme": "16-QAM",
+      "condition": "clean",
+      "bar": 0.01,
+      "seeds": [
+        {
+          "seed": 3,
+          "ber": 0.0,
+          "naive_ber": 0.123,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 5,
+          "ber": 0.0,
+          "naive_ber": 0.09666666666666666,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 7,
+          "ber": 0.0003355704697986577,
+          "naive_ber": 0.14666666666666667,
+          "locked": true,
+          "path": "coherent"
+        }
+      ],
+      "ber_max": 0.0003355704697986577,
+      "ber_mean": 0.00011185682326621923,
+      "status": "PASS",
+      "exception": false
+    },
+    {
+      "scheme": "16-QAM",
+      "condition": "combined-10dB",
+      "bar": 0.05,
+      "seeds": [
+        {
+          "seed": 3,
+          "ber": 0.024161073825503355,
+          "naive_ber": 0.437,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 5,
+          "ber": 0.02919463087248322,
+          "naive_ber": 0.44066666666666665,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 7,
+          "ber": 0.03322147651006711,
+          "naive_ber": 0.43966666666666665,
+          "locked": true,
+          "path": "coherent"
+        }
+      ],
+      "ber_max": 0.03322147651006711,
+      "ber_mean": 0.02885906040268456,
+      "status": "PASS",
+      "exception": false
+    },
+    {
+      "scheme": "64-QAM",
+      "condition": "clean",
+      "bar": 0.01,
+      "seeds": [
+        {
+          "seed": 3,
+          "ber": 0.0,
+          "naive_ber": 0.261,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 5,
+          "ber": 0.0006734006734006734,
+          "naive_ber": 0.25933333333333336,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 7,
+          "ber": 0.0003367003367003367,
+          "naive_ber": 0.26766666666666666,
+          "locked": true,
+          "path": "coherent"
+        }
+      ],
+      "ber_max": 0.0006734006734006734,
+      "ber_mean": 0.0003367003367003367,
+      "status": "PASS",
+      "exception": false
+    },
+    {
+      "scheme": "64-QAM",
+      "condition": "combined-10dB",
+      "bar": 0.05,
+      "seeds": [
+        {
+          "seed": 3,
+          "ber": 0.03367003367003367,
+          "naive_ber": 0.45566666666666666,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 5,
+          "ber": 0.03737373737373737,
+          "naive_ber": 0.465,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 7,
+          "ber": 0.037037037037037035,
+          "naive_ber": 0.45966666666666667,
+          "locked": true,
+          "path": "coherent"
+        }
+      ],
+      "ber_max": 0.03737373737373737,
+      "ber_mean": 0.036026936026936025,
+      "status": "PASS",
+      "exception": false
+    },
+    {
+      "scheme": "2-FSK",
+      "condition": "clean",
+      "bar": 0.01,
+      "seeds": [
+        {
+          "seed": 3,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 5,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 7,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        }
+      ],
+      "ber_max": 0.0,
+      "ber_mean": 0.0,
+      "status": "PASS",
+      "exception": false
+    },
+    {
+      "scheme": "2-FSK",
+      "condition": "combined-10dB",
+      "bar": 0.05,
+      "seeds": [
+        {
+          "seed": 3,
+          "ber": 0.0,
+          "naive_ber": 0.0013333333333333333,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 5,
+          "ber": 0.0,
+          "naive_ber": 0.002,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 7,
+          "ber": 0.0,
+          "naive_ber": 0.003,
+          "locked": true,
+          "path": "coherent"
+        }
+      ],
+      "ber_max": 0.0,
+      "ber_mean": 0.0,
+      "status": "PASS",
+      "exception": false
+    },
+    {
+      "scheme": "4-FSK",
+      "condition": "clean",
+      "bar": 0.01,
+      "seeds": [
+        {
+          "seed": 3,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 5,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 7,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        }
+      ],
+      "ber_max": 0.0,
+      "ber_mean": 0.0,
+      "status": "PASS",
+      "exception": false
+    },
+    {
+      "scheme": "4-FSK",
+      "condition": "combined-10dB",
+      "bar": 0.05,
+      "seeds": [
+        {
+          "seed": 3,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 5,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        },
+        {
+          "seed": 7,
+          "ber": 0.0,
+          "naive_ber": 0.0,
+          "locked": true,
+          "path": "coherent"
+        }
+      ],
+      "ber_max": 0.0,
+      "ber_mean": 0.0,
+      "status": "PASS",
+      "exception": false
+    }
+  ],
+  "summary": {
+    "n_pass": 14,
+    "n_known_gap": 0,
+    "n_fail": 0,
+    "overall": "PASS"
+  },
+  "warnings": []
+}

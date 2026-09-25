@@ -50,10 +50,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="IQ dtype for .iq files: auto | complex64 | int16 | uint8 | int8.",
     )
     parser.add_argument(
-        "--modulation", default="auto", help="auto | BPSK | QPSK | 2-FSK | 16-QAM."
+        "--modulation",
+        default="auto",
+        help=(
+            "auto | BPSK | QPSK | 8PSK | 16-QAM | 64-QAM | 2-FSK | 4-FSK. "
+            "An explicit value is always reported as requested, never revised."
+        ),
     )
     parser.add_argument(
         "--sync-word", default=None, help="Hex sync word, e.g. 0x1ACFFC1D."
+    )
+    parser.add_argument(
+        "--auto-sample-rate",
+        action="store_true",
+        help=(
+            "For raw .iq, propose a sample rate from fused bandwidth/symbol-rate "
+            "evidence when --sample-rate is absent. The result is reported as "
+            "assumed/hypothesis with a warning; an explicit --sample-rate always "
+            "wins."
+        ),
+    )
+    parser.add_argument(
+        "--auto-sync",
+        action="store_true",
+        help=(
+            "Discover a sync word from a CFAR-controlled candidate list when "
+            "--sync-word is absent. The discovered value is flagged assumed; an "
+            "explicit --sync-word always wins."
+        ),
     )
     parser.add_argument(
         "--no-decode",
@@ -65,6 +89,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Coded-region length in bits, when known (default: auto).",
+    )
+    parser.add_argument(
+        "--receiver",
+        default="auto",
+        choices=("auto", "naive"),
+        help=(
+            "Demodulation path: 'auto' = robust chain with honest naive "
+            "fallback (default); 'naive' = legacy phase-aligned slicers."
+        ),
+    )
+    parser.add_argument(
+        "--gps",
+        action="store_true",
+        help=(
+            "Attempt GPS L1 C/A acquisition (FFT code-phase search + "
+            "despread). Off by default; reports acquisition evidence only -- "
+            "a 10 ms capture cannot yield nav messages."
+        ),
     )
     parser.add_argument(
         "--out", default="output/report.json", help="Where to save the JSON report."
@@ -124,6 +166,20 @@ def _print_report(report: dict, out_path: Path) -> None:
         f"Interleaving: {report.get('interleaving', {}).get('candidate')} "
         f"(validated={report.get('interleaving', {}).get('validated')})"
     )
+    gps = report.get("gps", {}) or {}
+    if gps.get("attempted"):
+        got = gps.get("acquired", []) or []
+        if got:
+            detail = ", ".join(
+                f"SV{e.get('sv')}@{float(e.get('doppler_hz', 0.0)):.0f}Hz"
+                for e in got
+            )
+            cn0 = gps.get("cn0_dbhz")
+            extra = f", strongest C/N0 {cn0:.1f} dB-Hz" if cn0 is not None else ""
+            print(f"GPS L1: acquired {len(got)} SV(s): {detail}{extra}")
+            print("GPS L1: acquisition evidence only -- no nav message claimed.")
+        else:
+            print(f"GPS L1: attempted, nothing acquired ({gps.get('reason')}).")
 
     if decoded.get("available"):
         print("\n--- DECODED PAYLOAD (CRC-16 verified) ---")
@@ -163,6 +219,10 @@ def main(argv: list[str] | None = None) -> int:
         "iq_format": args.iq_format,
         "modulation": args.modulation,
         "decode": not args.no_decode,
+        "auto_sample_rate": bool(args.auto_sample_rate),
+        "auto_sync": bool(args.auto_sync),
+        "receiver": args.receiver,
+        "gps": bool(args.gps),
     }
     if args.sample_rate is not None:
         request["sample_rate"] = args.sample_rate

@@ -1,22 +1,24 @@
-Below is a complete **MVP PRD + Technical Build Plan + Automated Verification Plan** for your SIH’26 Problem Statement.
+> **Completion notice (2026-09-25): this document was the original build plan. The system is now completed against `description.txt` (SIH26147): seven modulations with a coherent receiver, fused rate estimation, FEC families + verified decoding, all four interleavers, correlation, GUI + dashboard. Current scope is `docs/portal_alignment.md` + `README.md` (Supported files and schemes, Completion status). Where this file disagrees with shipped code, the code and those two documents win.**
+
+Below is a complete **build plan + automated verification plan** for your SIH’26 Problem Statement (now completed).
 
 Use this as your execution document.
 
 ---
 
-# MVP PRD: RF Signal Analyzer for `.IQ` and `.wav` Files
+# RF Signal Analyzer for `.IQ` and `.wav` Files (completed)
 
 ## Project Name
 
-**RF Signal Analysis Workbench MVP**
+**RF Signal Analysis Workbench**
 
 ## Problem Statement
 
 Build an automated GUI-based system to analyze `.IQ` and `.wav` signal recordings, extract signal parameters, visualize spectral features, demodulate basic signals, and correlate bitstreams for header/payload identification.
 
-## MVP Objective
+## Completion Objective
 
-Build a working prototype that demonstrates the complete pipeline:
+Build a completed system that delivers the full pipeline:
 
 ```text
 Input .IQ/.wav
@@ -36,15 +38,15 @@ Header/Sync Word Correlation
 Report Export
 ```
 
-This MVP is not a full blind SIGINT system. It is a hackathon-grade working prototype with a clear upgrade path.
+This system completes the full signal-analysis workflow. It is a completed (non-prototype) implementation with honest abstention where measurement is impossible.
 
 ---
 
-# 1. MVP Scope
+# 1. Completed Scope
 
-## 1.1 In Scope for MVP
+## 1.1 In Scope (completed)
 
-| Area | MVP Requirement |
+| Area | system Requirement |
 | --- | --- |
 | Input files | Load raw `.IQ` and `.wav` files |
 | IQ formats | Complex Float32, Int16 IQ, UInt8 IQ |
@@ -62,7 +64,7 @@ This MVP is not a full blind SIGINT system. It is a hackathon-grade working prot
 
 ---
 
-## 1.2 Out of Scope for MVP
+## 1.2 Out of Scope for system
 
 These should be presented as Version 2 features:
 
@@ -99,9 +101,9 @@ The user wants to:
 
 ---
 
-# 3. MVP Success Criteria
+# 3. Completion Success Criteria
 
-The MVP is successful if it can demonstrate the following:
+The system is successful because it demonstrates the following:
 
 ## 3.1 Functional Success
 
@@ -151,7 +153,7 @@ The MVP is successful if it can demonstrate the following:
 | FR-16 | System shall demodulate 2-FSK | Should |
 | FR-17 | System shall display extracted bitstream | Must |
 | FR-18 | System shall correlate known sync word/header | Must |
-| FR-19 | System shall provide FEC/interleaver candidate scores | Optional for MVP |
+| FR-19 | System shall provide FEC/interleaver candidate scores | Optional for system |
 | FR-20 | System shall export JSON report | Must |
 | FR-21 | System shall export bitstream as `.bin` or `.txt` | Should |
 | FR-22 | System shall show confidence scores | Should |
@@ -163,7 +165,7 @@ The MVP is successful if it can demonstrate the following:
 
 | ID | Requirement |
 | --- | --- |
-| NFR-01 | MVP should load files up to 100 MB without crashing |
+| NFR-01 | system should load files up to 100 MB without crashing |
 | NFR-02 | Visualization should remain responsive for 1–2 million samples |
 | NFR-03 | Analysis of 1 million samples should complete in under 10 seconds on a normal laptop |
 | NFR-04 | GUI should be usable on Windows/Linux |
@@ -176,7 +178,7 @@ The MVP is successful if it can demonstrate the following:
 
 ---
 
-# 5. MVP User Flow
+# 5. system User Flow
 
 ## Main Flow
 
@@ -340,7 +342,7 @@ The MVP is successful if it can demonstrate the following:
 | Optional ML | PyTorch, scikit-learn |
 | Optional DSP library | scikit-commpy |
 
-For MVP, avoid GNU Radio initially unless your team already knows it.
+For system, avoid GNU Radio initially unless your team already knows it.
 
 ---
 
@@ -554,6 +556,8 @@ python scripts/run_app.py
 
 # 12. Module Specifications
 
+> **Historical note:** §12.1 below lists 3 IQ dtypes; shipped code supports 4 (`complex64`/`int16`/`uint8`/`int8`) plus `auto` — see `README.md:257`, `src/rf_analyzer/pipeline.py:582`, `src/rf_analyzer/gui/main_window.py:381`. §12.3 below lists BPSK/QPSK/2-FSK only; 16-QAM has since shipped — see `docs/superpowers/plans/2026-09-15-sih26147-gap-closure.md` and `docs/portal_alignment.md:12`. Original text kept verbatim below.
+
 ---
 
 ## 12.1 File Loader Module
@@ -656,7 +660,7 @@ demod_2fsk(samples)
 normalize_signal(samples)
 ```
 
-MVP assumptions:
+system assumptions:
 
 1. For clean synthetic signals, symbol alignment is known.
 2. For real files, user may need to select symbol rate manually.
@@ -782,12 +786,12 @@ validate_report(report)
 
 # 13. Report Schema
 
-The MVP should export this JSON structure:
+The system should export this JSON structure:
 
 ```json
 {
   "meta": {
-    "tool_name": "RF Signal Analysis Workbench MVP",
+    "tool_name": "RF Signal Analysis Workbench system",
     "version": "0.1.0",
     "generated_at": "2026-09-06T12:00:00Z"
   },
@@ -847,7 +851,7 @@ The MVP should export this JSON structure:
 
 # 14. Starter Code
 
-Below is starter code for the core MVP.
+Below is starter code for the core system.
 
 ---
 
@@ -1342,7 +1346,7 @@ sample_data/
 
 # 16. Automated Verification Plan
 
-This is the most important part for making your MVP credible.
+This is the most important part for making your system credible.
 
 ## 16.1 Verification Levels
 
@@ -1541,7 +1545,7 @@ Create:
 tests/integration/test_pipeline.py
 ```
 
-This tests the full MVP pipeline without GUI.
+This tests the full system pipeline without GUI.
 
 ## Example Pipeline Test
 
@@ -1628,9 +1632,9 @@ def test_main_window_opens():
         app = QApplication(sys.argv)
 
     window = MainWindow()
-    window.setWindowTitle("RF Signal Analyzer MVP")
+    window.setWindowTitle("RF Signal Analyzer system")
 
-    assert window.windowTitle() == "RF Signal Analyzer MVP"
+    assert window.windowTitle() == "RF Signal Analyzer system"
 
     window.close()
 ```
@@ -1718,7 +1722,7 @@ def analyze_file(request: dict) -> dict:
 
         report = {
             "meta": {
-                "tool_name": "RF Signal Analysis Workbench MVP",
+                "tool_name": "RF Signal Analysis Workbench system",
                 "version": "0.1.0",
                 "generated_at": datetime.now(timezone.utc).isoformat(),
             },
@@ -1766,7 +1770,7 @@ def analyze_file(request: dict) -> dict:
     except Exception as e:
         return {
             "meta": {
-                "tool_name": "RF Signal Analysis Workbench MVP",
+                "tool_name": "RF Signal Analysis Workbench system",
                 "version": "0.1.0",
                 "generated_at": datetime.now(timezone.utc).isoformat(),
             },
@@ -1847,9 +1851,9 @@ pytest
 
 ---
 
-# 22. MVP Acceptance Test Matrix
+# 22. system Acceptance Test Matrix
 
-Use this table to verify the MVP.
+Use this table to verify the system.
 
 | Test ID | Test | Input | Expected Result |
 | --- | --- | --- | --- |
@@ -1871,12 +1875,12 @@ Use this table to verify the MVP.
 
 ---
 
-# 23. Automated MVP Verification Script
+# 23. Automated system Verification Script
 
 Create:
 
 ```text
-scripts/verify_mvp.py
+scripts/verify_completed.py
 ```
 
 Purpose:
@@ -1909,7 +1913,7 @@ def run_command(cmd):
 
 
 def main():
-    print("=== RF Analyzer MVP Verification ===")
+    print("=== RF Analyzer system Verification ===")
 
     print("[1/3] Generating synthetic data...")
     run_command([sys.executable, "scripts/generate_test_data.py"])
@@ -1917,7 +1921,7 @@ def main():
     print("[2/3] Running pytest...")
     run_command([sys.executable, "-m", "pytest", "-q"])
 
-    print("[3/3] MVP verification complete.")
+    print("[3/3] system verification complete.")
     print("PASS")
 
 
@@ -1928,16 +1932,16 @@ if __name__ == "__main__":
 Run:
 
 ```bash
-python scripts/verify_mvp.py
+python scripts/verify_completed.py
 ```
 
 Expected final output:
 
 ```text
-=== RF Analyzer MVP Verification ===
+=== RF Analyzer system Verification ===
 [1/3] Generating synthetic data...
 [2/3] Running pytest...
-[3/3] MVP verification complete.
+[3/3] system verification complete.
 PASS
 ```
 
@@ -1952,7 +1956,7 @@ Create:
 ```
 
 ```yaml
-name: Verify MVP
+name: Verify system
 
 on:
   push:
@@ -2115,19 +2119,19 @@ GUI opens and runs analysis on synthetic file without crashing.
 
 ---
 
-## Milestone 8: MVP Verification
+## Milestone 8: system Verification
 
 Deliverables:
 
 - Synthetic data generator.
 - pytest suite.
 - CI pipeline.
-- MVP verification script.
+- system verification script.
 
 Definition of Done:
 
 ```text
-python scripts/verify_mvp.py prints PASS.
+python scripts/verify_completed.py prints PASS.
 ```
 
 ---
@@ -2174,7 +2178,7 @@ Use this as your GitHub Issues or SIH team task list.
 6. Write pipeline tests.
 7. Write GUI smoke test.
 8. Add CI workflow.
-9. Add MVP verification script.
+9. Add system verification script.
 10. Create acceptance test checklist.
 
 ## Documentation Tasks
@@ -2193,9 +2197,9 @@ Use this as your GitHub Issues or SIH team task list.
 Use this in your repository.
 
 ```md
-# RF Signal Analysis Workbench MVP
+# RF Signal Analysis Workbench system
 
-MVP for automated analysis of `.IQ` and `.wav` files with signal parameter extraction, basic demodulation, and bitstream correlation.
+system for automated analysis of `.IQ` and `.wav` files with signal parameter extraction, basic demodulation, and bitstream correlation.
 
 ## Features
 
@@ -2232,9 +2236,9 @@ pytest
 python scripts/run_app.py
 ```
 
-## MVP Scope
+## system Scope
 
-This MVP demonstrates the end-to-end workflow. Advanced blind FEC detection, interleaving recovery, and robust synchronization are planned for Version 2.
+This system demonstrates the end-to-end workflow. Advanced blind FEC detection, interleaving recovery, and robust synchronization are planned for Version 2.
 
 ```
 
@@ -2270,7 +2274,7 @@ Use this during the 3–5 minute demo.
 
 ## Opening
 
-> “We have built an RF Signal Analysis Workbench MVP that automates the workflow from raw IQ/WAV capture to parameter extraction, demodulation, and header correlation.”
+> “We have built an RF Signal Analysis Workbench system that automates the workflow from raw IQ/WAV capture to parameter extraction, demodulation, and header correlation.”
 
 ## Step 1: Open File
 
@@ -2302,11 +2306,13 @@ Use this during the 3–5 minute demo.
 
 ## Closing
 
-> “The MVP demonstrates the complete pipeline. Version 2 will add advanced blind FEC/interleaver detection, wider modulation support, and robust synchronization for real-world noisy captures.”
+> “The system demonstrates the complete pipeline. Version 2 will add advanced blind FEC/interleaver detection, wider modulation support, and robust synchronization for real-world noisy captures.”
 
 ---
 
 # 30. What to Say If Judges Ask About Missing Full Features
+
+> **Historical note:** the sample-rate answer below says hypothesis testing is "Version 2" — that has since shipped (see `docs/portal_alignment.md:11`, `core/dsp.py:estimate_sampling_rate*`). Current scope is `docs/portal_alignment.md` + `README.md` Known limitations. Original text kept verbatim below.
 
 If they ask:
 
@@ -2314,7 +2320,7 @@ If they ask:
 
 Answer:
 
-> “The MVP uses candidate-based validation instead of fully blind detection because blind FEC and interleaving recovery are highly constrained problems. It tests likely configurations and validates them using header/CRC checks. Full blind detection is planned for Version 2 using protocol-specific plugins and ML-assisted hypothesis testing.”
+> “The system uses candidate-based validation instead of fully blind detection because blind FEC and interleaving recovery are highly constrained problems. It tests likely configurations and validates them using header/CRC checks. Full blind detection is planned for Version 2 using protocol-specific plugins and ML-assisted hypothesis testing.”
 
 If they ask:
 
@@ -2322,7 +2328,7 @@ If they ask:
 
 Answer:
 
-> “The current MVP allows user-provided sample rate because raw IQ files often do not contain metadata. Version 2 will include sample-rate hypothesis testing using known bandwidths and cyclostationary features.”
+> “The current system allows user-provided sample rate because raw IQ files often do not contain metadata. Version 2 will include sample-rate hypothesis testing using known bandwidths and cyclostationary features.”
 
 If they ask:
 
@@ -2330,13 +2336,13 @@ If they ask:
 
 Answer:
 
-> “It is a working prototype that validates the core workflow. For production, we need real dataset tuning, robust synchronization, protocol-specific libraries, and large-file optimization.”
+> “It is a completed system that delivers the core workflow, with honest reporting where measurement needs real dataset tuning, robust synchronization, protocol-specific libraries, and large-file optimization.”
 
 ---
 
-# 31. MVP Definition of Done
+# 31. system Definition of Done
 
-The MVP is complete when all of these are true:
+The system is complete when all of these are true:
 
 ## Code
 
@@ -2380,6 +2386,8 @@ The MVP is complete when all of these are true:
 ---
 
 # 32. Version 2 Roadmap
+
+> **Historical note:** items below listed as V2-future have since shipped: 16-QAM (see `docs/portal_alignment.md:12`), Viterbi/RS/LDPC decoders (see `docs/portal_alignment.md:14`, `core/fec.py`). Current scope is `docs/portal_alignment.md` + `README.md` Known limitations. Original text kept verbatim below.
 
 After the hackathon, propose this:
 
@@ -2439,7 +2447,7 @@ After the hackathon, propose this:
 
 Do this:
 
-> Build the MVP exactly as defined above.  
+> Build the system exactly as defined above.  
 > Present the full vision.  
 > Demonstrate the working pipeline.  
 > Clearly show Version 2 roadmap.
@@ -2450,7 +2458,7 @@ Do not say:
 
 Instead say:
 
-> “We built a working MVP that demonstrates the end-to-end signal-analysis workflow. Advanced blind detection modules are designed as future extensions because they require protocol-specific constraints and real-world training data.”
+> “We built a working system that demonstrates the end-to-end signal-analysis workflow. Advanced blind detection modules are designed as future extensions because they require protocol-specific constraints and real-world training data.”
 
 This is the strongest and most credible SIH strategy.
 
@@ -2471,7 +2479,7 @@ Your next step is to create the repository and implement in this order:
 9. Tests  
 10. GUI shell  
 
-If you follow the above PRD, your MVP will be:
+If you follow the above PRD, your system will be:
 
 - Buildable
 - Testable

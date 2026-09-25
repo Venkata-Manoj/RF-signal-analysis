@@ -244,7 +244,15 @@ def test_batch_analysis_writes_both_exports(tmp_path, monkeypatch):
 
     window = _make_window()
     try:
-        rows = window.run_batch_analysis(str(work), export=True)
+        # Generous decode budgets: the concatenated search sits near the
+        # interactive 4 s default, so a loaded machine must not decide this
+        # correctness result (same rule as the pipeline BUDGET overrides).
+        rows = window.run_batch_analysis(
+            str(work),
+            export=True,
+            decode_max_bits=200_000,
+            decode_time_budget_s=120.0,
+        )
         assert len(rows) == 3
         assert all(r["decode_validated"] == "yes" for r in rows), rows
         assert Path("output/batch_summary.csv").exists()
@@ -288,5 +296,118 @@ def test_open_demo_capture_unknown_name_is_harmless():
     try:
         window.open_demo_capture("definitely-not-a-capture.iq")
         assert window.current_file is None
+    finally:
+        window.close()
+
+
+def test_receiver_combo_exists_with_auto_default():
+    window = _make_window()
+    try:
+        combo = window.receiver_combo
+        assert combo.objectName() == "receiver_combo"
+        options = [combo.itemText(i) for i in range(combo.count())]
+        assert options == ["Auto", "Naive"]
+        assert combo.currentText() == "Auto"
+        tip = combo.toolTip().lower()
+        assert "auto" in tip
+        assert "naive" in tip
+    finally:
+        window.close()
+
+
+def test_build_request_carries_receiver_selection(tmp_path):
+    window = _make_window()
+    try:
+        path = tmp_path / "x.iq"
+        modulate(
+            build_frame(MESSAGE, fec="none", interleaver="none")["bits"], "BPSK"
+        ).astype(np.complex64).tofile(path)
+        window.open_file(str(path))
+
+        assert window._build_request()["receiver"] == "auto"
+        window.receiver_combo.setCurrentText("Naive")
+        assert window._build_request()["receiver"] == "naive"
+        window.receiver_combo.setCurrentText("Auto")
+        assert window._build_request()["receiver"] == "auto"
+
+        # Last-analysis label must distinguish the two modes.
+        auto_summary = window._request_summary(
+            {**window._build_request(), "receiver": "auto"}
+        )
+        naive_summary = window._request_summary(
+            {**window._build_request(), "receiver": "naive"}
+        )
+        assert "recv=auto" in auto_summary
+        assert "recv=naive" in naive_summary
+    finally:
+        window.close()
+
+
+def test_receiver_change_marks_results_stale(tmp_path):
+    window = _make_window()
+    try:
+        path = tmp_path / "x.iq"
+        modulate(
+            build_frame(MESSAGE, fec="none", interleaver="none")["bits"], "BPSK"
+        ).astype(np.complex64).tofile(path)
+        window.open_file(str(path))
+        window.run_analysis()
+        _get_app().processEvents()
+        assert window.stale_badge.isHidden()
+
+        window.receiver_combo.setCurrentText("Naive")
+        _get_app().processEvents()
+        assert not window.stale_badge.isHidden()
+    finally:
+        window.close()
+
+
+def test_auto_analyze_request_forces_auto_receiver(tmp_path):
+    window = _make_window()
+    try:
+        path = tmp_path / "x.iq"
+        modulate(
+            build_frame(MESSAGE, fec="none", interleaver="none")["bits"], "BPSK"
+        ).astype(np.complex64).tofile(path)
+        window.open_file(str(path))
+
+        window.receiver_combo.setCurrentText("Naive")
+        req = window._build_auto_request()
+        assert req["receiver"] == "auto"
+        # Manual combo left untouched for a later manual Run.
+        assert window.receiver_combo.currentText() == "Naive"
+
+        window.auto_analyze()
+        _get_app().processEvents()
+        assert "receiver=auto" in window.log_console.toPlainText()
+        assert window.receiver_combo.currentText() == "Naive"
+    finally:
+        window.close()
+
+
+def test_results_table_shows_receiver_rows_after_real_run(tmp_path):
+    window = _make_window()
+    try:
+        if BPSK_IQ.exists():
+            window.open_file(str(BPSK_IQ))
+        else:
+            # 16-QAM-style synthetic fallback (same build_frame/modulate
+            # helpers as the other tests in this file).
+            path = tmp_path / "fallback_16qam.iq"
+            modulate(
+                build_frame(MESSAGE, fec="none", interleaver="none")["bits"],
+                "16-QAM",
+            ).astype(np.complex64).tofile(path)
+            window.open_file(str(path))
+            window.mod_combo.setCurrentText("16-QAM")
+        window.run_analysis()
+        _get_app().processEvents()
+
+        assert window.last_report is not None
+        assert _table_value(window, "Receiver path") in ("naive", "coherent")
+        assert _table_value(window, "Receiver requested") == "auto"
+        assert _table_value(window, "Receiver sps") not in (None, "", "—")
+        # Locked is yes/no for coherent, em dash for the naive slicers.
+        assert _table_value(window, "Receiver locked") not in (None, "")
     finally:
         window.close()

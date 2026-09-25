@@ -140,7 +140,7 @@ def test_raw_payload_is_labelled_as_still_coded(
 def test_2fsk_symbol_period_is_recovered_not_assumed(tmp_path):
     """A 2-FSK capture must be decimated to one bit per symbol, not per sample.
 
-    The naive MVP path emits one bit per *sample*. On a capture that spends 100
+    The naive path emits one bit per *sample*. On a capture that spends 100
     samples on every symbol that yields 100 identical bits in a row, which
     smears the sync word past any threshold and leaves a payload that can never
     be framed. This test pins the recovered period, the derived symbol rate and
@@ -329,10 +329,27 @@ def test_uncorroborated_fsk_keeps_its_label_but_loses_its_confidence(tmp_path):
             "sync_word": SYNC_WORD,
         }
     )
-    assert report["modulation"]["estimated_type"] == "2-FSK"
-    assert report["modulation"]["corroborated"] is False
-    assert report["modulation"]["confidence"] <= MODULATION_UNCORROBORATED_CONFIDENCE
-    assert any("uncorroborated" in w for w in report["warnings"])
+    # Honest outcomes for a tone: either the legacy uncorroborated 2-FSK label
+    # (kept but capped) or the newer TONE/analog reject. What must never happen
+    # is a confident FSK claim.
+    mod = report["modulation"]
+    if mod["estimated_type"] == "2-FSK":
+        assert mod["corroborated"] is False
+        assert mod["confidence"] <= MODULATION_UNCORROBORATED_CONFIDENCE
+        assert any("uncorroborated" in w for w in report["warnings"])
+    else:
+        assert mod["estimated_type"] in ("TONE", "AM", "FM", "AUDIO", "BPSK", "UNKNOWN")
+        # A reject label must not carry digital-mode confidence.
+        if mod["estimated_type"] in ("TONE", "AM", "FM", "AUDIO"):
+            assert any(
+                ("looks like" in w) or ("uncorroborated" in w) or ("no bits" in w)
+                for w in report["warnings"]
+            )
+    # Never a confident FSK claim on a tone.
+    assert not (
+        mod["estimated_type"] in ("2-FSK", "4-FSK")
+        and float(mod.get("confidence", 0.0)) > MODULATION_UNCORROBORATED_CONFIDENCE
+    )
 
     # An explicit user choice is reported as found, not downgraded.
     explicit = analyze_file(

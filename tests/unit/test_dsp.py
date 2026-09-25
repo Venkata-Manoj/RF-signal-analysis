@@ -93,7 +93,7 @@ def test_bandwidth_spans_two_qualifying_bins():
 
 
 def test_flat_spectrum_modulation_cannot_be_measured_by_the_floor_rule():
-    """Document the MVP limitation that motivates the pipeline warning.
+    """Document the bandwidth-estimator limitation that motivates the pipeline warning.
 
     A randomly-modulated QPSK stream has an essentially flat spectrum, so its
     peak-above-median is no larger than that of pure noise. Relaxing the 10 dB
@@ -137,7 +137,7 @@ def test_narrowband_tone_is_still_measurable():
 
 # ---- 2-FSK symbol-period recovery ------------------------------------------
 #
-# The MVP demodulator works one bit per sample. That is only correct when the
+# The slicers work one bit per sample. That is only correct when the
 # capture already has one sample per symbol; a real 2-FSK burst does not. These
 # tests pin the estimator that recovers the period, including the cases where it
 # must decline rather than guess.

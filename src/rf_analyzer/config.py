@@ -1,7 +1,7 @@
-"""Shared MVP constants. Full report schema lives in info.md §13."""
+"""Shared constants. Full report schema lives in info.md §13."""
 
-TOOL_NAME = "RF Signal Analysis Workbench MVP"
-VERSION = "0.1.0"
+TOOL_NAME = "RF Signal Analysis Workbench"
+VERSION = "1.0.0"
 
 DEFAULT_SAMPLE_RATE = 100_000.0
 DEFAULT_IQ_FORMAT = "complex64"
@@ -69,9 +69,15 @@ MODULATION_FIT_CANDIDATES = ("BPSK", "QPSK", "8PSK", "16-QAM", "64-QAM")
 #: Symbol cap for the fit cross-check, so a multi-megabit capture stays fast.
 MODULATION_FIT_MAX_SAMPLES = 100_000
 
+#: Maximum input file size in bytes (info.md NFR-01: files up to 100 MB must
+#: load without crashing). Anything larger is rejected gracefully with an
+#: error report instead of being loaded. Single source of truth for the
+#: ``io.check_size`` gate and the dashboard upload ceiling.
+MAX_FILE_BYTES = 100 * 1024 * 1024
+
 # 2-FSK symbol-period (samples per symbol) recovery.
 #
-# The MVP demodulator works one bit per sample, which is only correct when the
+# The slicers work one bit per sample, which is only correct when the
 # capture already has one sample per symbol. A real 2-FSK burst does not: the
 # project's own sample_data/fsk2.iq spends 100 samples on every bit, so the
 # naive path smears each bit across 100 demodulated samples and the sync word

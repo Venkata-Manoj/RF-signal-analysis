@@ -1,4 +1,4 @@
-name: Verify MVP
+name: Verify completed system
 
 on:
   push:
@@ -39,4 +39,4 @@ jobs:
 
       - name: Verify the MVP end to end
         run: |
-          python scripts/verify_mvp.py
+          python scripts/verify_completed.py

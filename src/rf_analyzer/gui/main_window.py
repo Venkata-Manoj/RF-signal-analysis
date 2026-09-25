@@ -1,4 +1,4 @@
-"""RF Signal Analyzer MVP — main window.
+"""RF Signal Analyzer — main window.
 
 Layout per info.md §6:
   Menu Bar: File | Analysis | Export | Help
@@ -87,6 +87,15 @@ QPushButton#run_btn { background-color: #16A34A; color: #0F172A; font-weight: 70
 QPushButton#run_btn:hover { background-color: #22C55E; }
 QPushButton#run_btn:disabled { background-color: #1A1E2F; color: #94A3B8; }
 QPushButton#run_btn[stale="true"] { border: 2px solid #EA580C; background-color: #16A34A; }
+QPushButton#auto_analyze_btn {
+    background-color: #0F172A; color: #F8FAFC;
+    border: 1px solid #16A34A; border-radius: 6px; padding: 7px 12px;
+    font-weight: 700;
+}
+QPushButton#auto_analyze_btn:hover { background-color: #1E293B; border: 1px solid #22C55E; }
+QPushButton#auto_analyze_btn:focus { border: 1px solid #FFFFFF; outline: none; }
+QPushButton#auto_analyze_btn:pressed { background-color: #1A1E2F; }
+QPushButton#auto_analyze_btn:disabled { background-color: #1A1E2F; color: #94A3B8; border: 1px solid #334155; }
 QLabel#stale_badge {
     background-color: #EA580C; color: #000000;
     border: 1px solid #EA580C; border-radius: 4px; padding: 3px 8px;
@@ -215,7 +224,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         if not _QT_AVAILABLE:
             raise ImportError("PyQt6/pyqtgraph are required for the GUI.")
         super().__init__(*args, **kwargs)
-        self.setWindowTitle("RF Signal Analyzer MVP")
+        self.setWindowTitle("RF Signal Analyzer")
         self.setMinimumSize(1100, 700)
         self.resize(1400, 850)
 
@@ -225,6 +234,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.last_bits: np.ndarray | None = None
         self._display_samples: np.ndarray | None = None
         self._display_rate: float | None = None
+        # Last constellation quality block (mode/EVM/MER) for the ideal toggle.
+        self._last_const_quality: dict = {}
         # Last successful Run request (for STALE tracking + "Last analysis" label).
         self._last_request: dict | None = None
         self._suppress_param_signals: bool = False
@@ -234,7 +245,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._build_menus()
         self._build_layout()
         self.setStyleSheet(_DARK_QSS)
-        self.log("RF Signal Analyzer MVP ready. Open an .iq or .wav file.")
+        self.log("RF Signal Analyzer ready. Open an .iq or .wav file.")
 
     # ------------------------------------------------------------------ #
     # Layout
@@ -267,6 +278,14 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.action_run.setShortcut("Ctrl+R")
         self.action_run.triggered.connect(self.run_analysis)
         analysis_menu.addAction(self.action_run)
+        self.action_auto_analyze = QAction("Auto-Analyze &Unknown File…", self)
+        self.action_auto_analyze.setShortcut("Ctrl+U")
+        self.action_auto_analyze.setToolTip(
+            "One-click automation for unknown captures: IQ format auto-detect, "
+            "sample-rate hint, sync-word discovery, burst-derived frame length"
+        )
+        self.action_auto_analyze.triggered.connect(self.auto_analyze)
+        analysis_menu.addAction(self.action_auto_analyze)
         analysis_menu.addSeparator()
         self.action_batch = QAction("&Batch Folder Analysis…", self)
         self.action_batch.setToolTip(
@@ -371,12 +390,24 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
         self.mod_combo = QComboBox()
         self.mod_combo.setObjectName("modulation_combo")
-        self.mod_combo.addItems(["Auto", "BPSK", "QPSK", "2-FSK", "16-QAM", "QAM"])
+        self.mod_combo.addItems(
+            ["Auto", "BPSK", "QPSK", "8PSK", "2-FSK", "4-FSK", "16-QAM", "64-QAM"]
+        )
         self.mod_combo.setCurrentText("Auto")
         self.mod_combo.setToolTip("Demodulation mode (Auto lets the pipeline decide)")
         # Alias used by some tests.
         self.modulation_combo = self.mod_combo
         params_form.addRow("Modulation:", self.mod_combo)
+
+        self.receiver_combo = QComboBox()
+        self.receiver_combo.setObjectName("receiver_combo")
+        self.receiver_combo.addItems(["Auto", "Naive"])
+        self.receiver_combo.setCurrentText("Auto")
+        self.receiver_combo.setToolTip(
+            "Receiver path: Auto uses the robust coherent chain with honest "
+            "naive fallback; Naive uses the legacy phase-aligned slicers directly"
+        )
+        params_form.addRow("Receiver:", self.receiver_combo)
 
         self.sync_word_edit = QLineEdit("0x1ACFFC1D")
         self.sync_word_edit.setObjectName("sync_word_edit")
@@ -405,6 +436,18 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             "the recording continues past the end of the burst."
         )
         params_form.addRow("Frame bits:", self.frame_bits_spin)
+
+        self.gps_check = QCheckBox("GPS L1 acquisition")
+        self.gps_check.setObjectName("gps_check")
+        self.gps_check.setChecked(False)
+        self.gps_check.setToolTip(
+            "Attempt GPS L1 C/A acquisition (FFT code-phase search over "
+            "32 SVs x Doppler bins, then despread). Off by default: it costs "
+            "seconds on wide captures. A 10 ms capture cannot yield nav "
+            "messages, so this reports acquisition evidence only, never a "
+            "decoded message."
+        )
+        params_form.addRow("GPS L1:", self.gps_check)
         left_layout.addWidget(params_group)
 
         self.run_btn = QPushButton("Run Analysis")
@@ -414,6 +457,21 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.run_btn.clicked.connect(self.run_analysis)
         self.run_analysis_btn = self.run_btn  # alias
         left_layout.addWidget(self.run_btn)
+
+        self.auto_analyze_btn = QPushButton("Auto-Analyze Unknown")
+        self.auto_analyze_btn.setObjectName("auto_analyze_btn")
+        self.auto_analyze_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.auto_analyze_btn.setToolTip(
+            "One-click automation for unknown captures: infers IQ format, "
+            "estimates a working sample rate, discovers the sync word and "
+            "bounds the decode with the burst region. Manual fields are "
+            "bypassed (modulation=auto, decode on). Results flagged "
+            "'assumed' are hints, not measurements. (Ctrl+U)"
+        )
+        self.auto_analyze_btn.clicked.connect(self.auto_analyze)
+        # Alias for callers/tests that use the full control name.
+        self.auto_analyze_button = self.auto_analyze_btn
+        left_layout.addWidget(self.auto_analyze_btn)
 
         self.export_btn = QPushButton("Export Report")
         self.export_btn.setObjectName("export_btn")
@@ -451,8 +509,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         waterfall_tab = QWidget()
         waterfall_layout = QVBoxLayout(waterfall_tab)
         waterfall_layout.setContentsMargins(2, 2, 2, 2)
-        self.waterfall_view = pg.ImageView()
+        self.waterfall_view = pg.ImageView(view=pg.PlotItem())
         self.waterfall_view.setObjectName("waterfall_view")
+        # A PlotItem view (per the ImageView docs) is what gives the
+        # waterfall real frequency/time axes instead of pixel indices.
+        self.waterfall_view.view.setLabel("bottom", "Frequency", units="Hz")
+        self.waterfall_view.view.setLabel("left", "Time", units="s")
         # Dark, RF-conventional colormap.
         try:
             self.waterfall_view.setColorMap(pg.colormap.get("inferno"))
@@ -462,12 +524,35 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.waterfall_tab = waterfall_tab
         self.tabs.addTab(waterfall_tab, "Waterfall")
 
+        const_tab = QWidget()
+        const_layout = QVBoxLayout(const_tab)
+        const_layout.setContentsMargins(2, 2, 2, 2)
+        self.show_ideal_check = QCheckBox("Show ideal reference")
+        self.show_ideal_check.setObjectName("show_ideal_check")
+        self.show_ideal_check.setChecked(False)
+        self.show_ideal_check.setToolTip(
+            "Overlay the ideal constellation for the reported mode. "
+            "The scatter itself stays raw received symbols, not symbol "
+            "decisions — the overlay is a reference only."
+        )
+        self.show_ideal_check.toggled.connect(self._on_show_ideal_toggled)
+        const_layout.addWidget(self.show_ideal_check)
         self.const_plot = pg.PlotWidget(title="Constellation (I vs Q)")
         self.const_plot.setLabel("left", "Q")
         self.const_plot.setLabel("bottom", "I")
         self.const_plot.setAspectLocked(True)
         self.const_plot.showGrid(x=True, y=True, alpha=0.25)
-        self.tabs.addTab(self.const_plot, "Constellation")
+        const_layout.addWidget(self.const_plot, stretch=1)
+        self.const_caption = QLabel(
+            "Raw received symbols (not symbol decisions); "
+            "ideal points are reference only."
+        )
+        self.const_caption.setObjectName("const_caption")
+        self.const_caption.setProperty("muted", True)
+        self.const_caption.setWordWrap(True)
+        const_layout.addWidget(self.const_caption)
+        self.const_tab = const_tab
+        self.tabs.addTab(const_tab, "Constellation")
 
         self.eye_plot = pg.PlotWidget(title="Eye diagram (I)")
         self.eye_plot.setLabel("left", "Amplitude")
@@ -682,9 +767,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.center_freq_spin.valueChanged.connect(self._on_params_changed)
             self.iq_format_combo.currentTextChanged.connect(self._on_params_changed)
             self.mod_combo.currentTextChanged.connect(self._on_params_changed)
+            self.receiver_combo.currentTextChanged.connect(self._on_params_changed)
             self.sync_word_edit.textChanged.connect(self._on_params_changed)
             self.decode_check.toggled.connect(self._on_params_changed)
             self.frame_bits_spin.valueChanged.connect(self._on_params_changed)
+            self.gps_check.toggled.connect(self._on_params_changed)
         except Exception:
             pass
 
@@ -711,8 +798,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         _notify(
             self,
             "info",
-            "About RF Signal Analyzer MVP",
-            "RF Signal Analysis Workbench MVP v0.1.0\n"
+            "About RF Signal Analyzer",
+            "RF Signal Analysis Workbench v1.0.0\n"
             "Load .iq/.wav → visualize → estimate → demodulate → correlate → export.",
         )
 
@@ -720,7 +807,15 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         text = self.mod_combo.currentText().strip()
         if text.lower() == "auto":
             return "auto"
-        return text  # "BPSK" | "QPSK" | "2-FSK"
+        return (
+            text  # "BPSK" | "QPSK" | "8PSK" | "2-FSK" | "4-FSK" | "16-QAM" | "64-QAM"
+        )
+
+    def _receiver_request_value(self) -> str:
+        text = self.receiver_combo.currentText().strip().lower()
+        if text == "naive":
+            return "naive"
+        return "auto"
 
     def _build_request(self) -> dict:
         if self.current_file is None:
@@ -732,9 +827,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             "center_frequency": float(self.center_freq_spin.value()),
             "iq_format": self.iq_format_combo.currentText().strip(),
             "modulation": self._modulation_request_value(),
+            "receiver": self._receiver_request_value(),
             "sync_word": self.sync_word_edit.text().strip(),
             "decode": bool(self.decode_check.isChecked()),
             "frame_bits": frame_bits if frame_bits > 0 else None,
+            "gps": bool(self.gps_check.isChecked()),
         }
 
     def _current_ui_request(self) -> dict | None:
@@ -754,11 +851,24 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             name = Path(str(req.get("file_path", "—"))).name
         except Exception:
             name = str(req.get("file_path", "—"))
-        return (
+        base = (
             f"{name}|rate={req.get('sample_rate')}|fmt={req.get('iq_format')}|"
-            f"mod={req.get('modulation')}|sync={req.get('sync_word')}|"
-            f"decode={req.get('decode')}|frame_bits={req.get('frame_bits')}"
+            f"mod={req.get('modulation')}|recv={req.get('receiver')}|"
+            f"sync={req.get('sync_word')}|"
+            f"decode={req.get('decode')}|frame_bits={req.get('frame_bits')}|"
+            f"gps={req.get('gps', False)}"
         )
+        # Auto flags only appear on auto requests; show them when present so
+        # the "Last analysis" label distinguishes an auto run from a manual
+        # one with otherwise identical visible fields.
+        auto_bits: list[str] = []
+        if req.get("auto_sample_rate"):
+            auto_bits.append("auto_rate=on")
+        if req.get("auto_sync"):
+            auto_bits.append("auto_sync=on")
+        if auto_bits:
+            base += "|" + "|".join(auto_bits)
+        return base
 
     def _update_last_analysis_label(self) -> None:
         """Show last-Run params vs current UI values (active-params label)."""
@@ -828,9 +938,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     "center_frequency",
                     "iq_format",
                     "modulation",
+                    "receiver",
                     "sync_word",
                     "decode",
                     "frame_bits",
+                    "gps",
                 ):
                     if str(cur.get(k)) != str(self._last_request.get(k)):
                         diffs.append(
@@ -938,16 +1050,80 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.log(f"ERROR: {exc}")
             _notify(self, "warning", "No file", str(exc))
             return
+        self._execute_pipeline_request(request, source="Run")
 
-        # Full param feedback: log exactly what this Run uses. center_freq
+    def _build_auto_request(self) -> dict:
+        """One-click request for unknown captures (Task 5 automation).
+
+        Manual fields are deliberately bypassed: IQ format is auto-detected,
+        ``sample_rate`` is omitted so ``auto_sample_rate`` proposes a working
+        rate, ``sync_word`` is omitted so ``auto_sync`` discovers one, the
+        modulation is estimated, the decode search runs, and the frame length
+        falls back to the burst-region hint. Every auto value is flagged
+        ``assumed`` in the report plus a warning -- hints, never measurements.
+        An explicit manual Run (see :meth:`run_analysis`) always remains
+        available and always wins over these defaults.
+        """
+        if self.current_file is None:
+            raise ValueError("No file selected. Click Open File first.")
+        return {
+            "file_path": str(self.current_file),
+            # No "sample_rate" key on purpose: raw .iq carries no rate
+            # metadata, so the pipeline's fused hint proposes one and flags
+            # input.sample_rate_assumed=True. For .wav the header rate is
+            # used regardless.
+            "center_frequency": float(self.center_freq_spin.value()),
+            "iq_format": "auto",
+            "modulation": "auto",
+            "receiver": "auto",
+            "sync_word": None,
+            "decode": True,
+            "frame_bits": None,
+            "auto_sample_rate": True,
+            "auto_sync": True,
+        }
+
+    def auto_analyze(self) -> None:
+        """Auto-analyze the open file with all automation flags enabled.
+
+        Single funnel for DSP: calls ``pipeline.analyze_file`` with the auto
+        request, never reimplements detection/estimation in the GUI. Manual
+        parameter widgets are left untouched so a manual Run stays available.
+        """
+        try:
+            request = self._build_auto_request()
+        except ValueError as exc:
+            self.log(f"ERROR: {exc}")
+            _notify(self, "warning", "No file", str(exc))
+            return
+        self.log(
+            "Auto-Analyze: bypassing manual fields "
+            "(iq_format=auto, sample-rate hint, sync discovery, burst frame "
+            "hint, modulation=auto, receiver=auto, decode on). Manual values remain in the UI "
+            "for a manual Run."
+        )
+        self._execute_pipeline_request(request, source="Auto-Analyze")
+
+    def _execute_pipeline_request(self, request: dict, *, source: str = "Run") -> None:
+        """Call pipeline.analyze_file and refresh plots/table/log.
+
+        Shared by :meth:`run_analysis` (manual fields) and
+        :meth:`auto_analyze` (automation flags). The GUI never duplicates DSP
+        logic: all estimation happens inside the pipeline.
+        """
+        # Full param feedback: log exactly what this run uses. center_freq
         # is metadata-only (recorded in report, not used for estimation).
-        self.log(f"Run request: {request}")
+        self.log(f"{source} request: {request}")
         self.log(
             "Note: center_frequency is metadata-only "
             f"({request.get('center_frequency')} Hz recorded, not estimated)."
         )
         self.log(f"Running analysis on {request['file_path']} …")
         self.run_btn.setEnabled(False)
+        try:
+            self.auto_analyze_btn.setEnabled(False)
+        except Exception:
+            pass
         try:
             # Single funnel for all DSP — GUI never reimplements it.
             from rf_analyzer.pipeline import analyze_file
@@ -962,11 +1138,19 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 f"Analysis pipeline is not ready:\n{exc}",
             )
             self.run_btn.setEnabled(True)
+            try:
+                self.auto_analyze_btn.setEnabled(True)
+            except Exception:
+                pass
             return
         except Exception as exc:
             self.log(f"ERROR: analysis failed: {exc}\n{traceback.format_exc()}")
             _notify(self, "critical", "Analysis failed", f"Analysis failed:\n{exc}")
             self.run_btn.setEnabled(True)
+            try:
+                self.auto_analyze_btn.setEnabled(True)
+            except Exception:
+                pass
             return
         finally:
             # Re-enabled below after UI refresh; keep enabled on early returns above.
@@ -994,7 +1178,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             except Exception as exc:
                 self.last_bits = None
                 self.log(f"WARN: could not read bits_preview: {exc}")
-            # This Run is now the fresh baseline for STALE tracking.
+            # This run is now the fresh baseline for STALE tracking.
             try:
                 self._last_request = dict(request)
             except Exception:
@@ -1020,6 +1204,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 )
                 self._log_payload_summary(report)
                 self._log_detection_summary(report)
+                self._log_gps_summary(report)
+                if source == "Auto-Analyze":
+                    self._log_auto_summary(report)
             self._update_results_table(report)
             self._update_plots(report)
         except Exception as exc:
@@ -1029,6 +1216,43 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             )
         finally:
             self.run_btn.setEnabled(True)
+            try:
+                self.auto_analyze_btn.setEnabled(True)
+            except Exception:
+                pass
+
+    def _log_auto_summary(self, report: dict) -> None:
+        """One honest log line about which values were assumed, not measured."""
+        try:
+            inp = (report or {}).get("input", {}) or {}
+            corr = (report or {}).get("correlation", {}) or {}
+            assumed: list[str] = []
+            if inp.get("sample_rate_assumed"):
+                assumed.append(
+                    f"sample_rate={inp.get('sample_rate')} Hz "
+                    f"(source={inp.get('sample_rate_source')})"
+                )
+            if inp.get("iq_format_used"):
+                assumed.append(
+                    f"iq_format={inp.get('iq_format_used')} "
+                    f"(confidence={inp.get('iq_format_confidence')})"
+                )
+            if corr.get("assumed"):
+                assumed.append(f"sync_word={corr.get('sync_word')}")
+            frame_bits = (
+                ((report or {}).get("payload", {}) or {}).get("decode_search", {}) or {}
+            ).get("frame_bits")
+            if frame_bits is not None:
+                assumed.append(f"frame_bits={frame_bits} (burst-derived)")
+            if assumed:
+                self.log(
+                    "Auto-Analyze assumed (hints, not measurements): "
+                    + "; ".join(assumed)
+                )
+            else:
+                self.log("Auto-Analyze: no value needed assuming.")
+        except Exception as exc:
+            self.log(f"WARN: could not summarise auto assumptions: {exc}")
 
     def export_report(self, path: str | None = None) -> None:
         """Save JSON report (+ bitstream when available) into output/."""
@@ -1053,17 +1277,37 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
             # Preferred path: canonical report module (schema-validated).
             try:
+                from rf_analyzer.core.report import json_safe as _json_safe
                 from rf_analyzer.core.report import save_bits as _save_bits
                 from rf_analyzer.core.report import save_report as _save_report
 
                 _save_report(self.last_report, str(out))
             except NotImplementedError:
-                out.write_text(json.dumps(self.last_report, indent=2, default=str))
+                # Strict-JSON fallback: json_safe maps Infinity/NaN to None
+                # and allow_nan=False fails loudly instead of emitting the
+                # invalid `Infinity` token a browser's JSON.parse rejects.
+                out.write_text(
+                    json.dumps(
+                        _json_safe(self.last_report),
+                        indent=2,
+                        default=str,
+                        allow_nan=False,
+                    )
+                )
             except Exception as exc:
                 self.log(
                     f"WARN: save_report failed ({exc}); falling back to json.dump."
                 )
-                out.write_text(json.dumps(self.last_report, indent=2, default=str))
+                from rf_analyzer.core.report import json_safe as _json_safe_fallback
+
+                out.write_text(
+                    json.dumps(
+                        _json_safe_fallback(self.last_report),
+                        indent=2,
+                        default=str,
+                        allow_nan=False,
+                    )
+                )
             self.log(f"Report saved to {out}.")
 
             # Bitstream sidecar when bits are available.
@@ -1184,6 +1428,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             mod = report.get("modulation", {}) or {}
             qual = report.get("quality", {}) or {}
             dem = report.get("demodulation", {}) or {}
+            rcv = dem.get("receiver", {}) or {}
             corr = report.get("correlation", {}) or {}
             pay = report.get("payload", {}) or {}
             dec = pay.get("decoded", {}) or {}
@@ -1192,6 +1437,15 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             fec = report.get("fec", {}) or {}
             ilv = report.get("interleaving", {}) or {}
             disp = report.get("display", {}) or {}
+            gps = report.get("gps", {}) or {}
+            got = gps.get("acquired", []) or []
+            if got:
+                gps_summary = ", ".join(
+                    f"SV{e.get('sv')}@{float(e.get('doppler_hz', 0.0)):.0f}Hz"
+                    for e in got
+                )
+            else:
+                gps_summary = "—"
 
             if burst.get("found") and burst.get("start_sample") is not None:
                 burst_span = f"{burst.get('start_sample')}-{burst.get('end_sample')}"
@@ -1203,17 +1457,26 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 ("File", str(inp.get("file_name", ""))),
                 ("File type", str(inp.get("file_type", ""))),
                 ("Sample rate", str(inp.get("sample_rate", ""))),
+                ("Sample rate assumed", _fmt_value(inp.get("sample_rate_assumed"))),
+                ("Sample rate source", _fmt_value(inp.get("sample_rate_source"))),
+                ("Auto sample rate", _fmt_value(inp.get("auto_sample_rate"))),
+                ("Auto sync", _fmt_value(inp.get("auto_sync"))),
+                ("IQ format (requested)", _fmt_value(inp.get("iq_format"))),
                 ("IQ format used", str(inp.get("iq_format_used", ""))),
+                ("IQ format confidence", _fmt_value(inp.get("iq_format_confidence"))),
                 ("Center freq (set)", _fmt_value(inp.get("center_frequency"))),
                 ("-- SIGNAL --", ""),
-                ("Samples", str(sig.get("num_samples", ""))),
-                ("Duration (s)", str(sig.get("duration_seconds", ""))),
-                ("Center freq est", str(sig.get("center_frequency_estimate", ""))),
-                ("Bandwidth est", str(sig.get("bandwidth_estimate", ""))),
-                ("SNR (dB)", str(sig.get("snr_db", ""))),
+                ("Samples", _fmt_value(sig.get("num_samples", ""))),
+                ("Duration (s)", _fmt_value(sig.get("duration_seconds", ""))),
+                (
+                    "Center freq est",
+                    _fmt_value(sig.get("center_frequency_estimate", "")),
+                ),
+                ("Bandwidth est", _fmt_value(sig.get("bandwidth_estimate", ""))),
+                ("SNR (dB)", _fmt_value(sig.get("snr_db", ""))),
                 ("Sample rate est", _fmt_value(sig.get("sample_rate_estimate"))),
-                ("Symbol rate est", str(sig.get("symbol_rate_estimate", ""))),
-                ("CFO est (Hz)", str(sig.get("cfo_estimate_hz", ""))),
+                ("Symbol rate est", _fmt_value(sig.get("symbol_rate_estimate", ""))),
+                ("CFO est (Hz)", _fmt_value(sig.get("cfo_estimate_hz", ""))),
                 ("-- BURST DETECTION --", ""),
                 ("Burst found", "yes" if burst.get("found") else "no"),
                 ("Burst span", burst_span),
@@ -1225,8 +1488,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 ("Burst method", _fmt_value(burst.get("method"))),
                 ("Burst note", _fmt_value(burst.get("reason"))),
                 ("-- MODULATION --", ""),
-                ("Modulation", str(mod.get("estimated_type", ""))),
-                ("Mod confidence", str(mod.get("confidence", ""))),
+                ("Modulation", _fmt_value(mod.get("estimated_type", ""))),
+                ("Mod confidence", _fmt_value(mod.get("confidence", ""))),
                 ("Mod alternatives", _fmt_value(mod.get("alternatives"))),
                 ("Mod corroborated", _fmt_value(mod.get("corroborated"))),
                 ("Mod revised from", _fmt_value(mod.get("revised_from"))),
@@ -1240,18 +1503,22 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 ("Quality symbols", _fmt_value(qual.get("n_symbols"))),
                 ("Fit ok", _fmt_value(qual.get("fit_ok"))),
                 ("-- DEMODULATION --", ""),
-                ("Demod mode", str(dem.get("mode", ""))),
-                ("Num bits", str(dem.get("num_bits", ""))),
+                ("Demod mode", _fmt_value(dem.get("mode", ""))),
+                ("Num bits", _fmt_value(dem.get("num_bits", ""))),
+                ("Receiver path", _fmt_value(rcv.get("path", ""))),
+                ("Receiver requested", _fmt_value(rcv.get("requested", ""))),
+                ("Receiver locked", _fmt_value(rcv.get("locked", ""))),
+                ("Receiver sps", _fmt_value(rcv.get("sps", ""))),
                 ("Display mode", _fmt_value(disp.get("mode"))),
                 ("Samples per symbol", _fmt_value(disp.get("samples_per_symbol"))),
                 ("Bitstream file", _fmt_value(dem.get("bitstream_file"))),
                 ("-- CORRELATION --", ""),
-                ("Sync word", str(corr.get("sync_word", ""))),
+                ("Sync word", _fmt_value(corr.get("sync_word", ""))),
                 ("Sync detected", _fmt_value(corr.get("detected"))),
                 ("Sync assumed", _fmt_value(corr.get("assumed"))),
                 ("Sync length (bits)", _fmt_value(corr.get("sync_length"))),
-                ("Header offset", str(corr.get("header_offset", ""))),
-                ("Corr score", str(corr.get("score", ""))),
+                ("Header offset", _fmt_value(corr.get("header_offset", ""))),
+                ("Corr score", _fmt_value(corr.get("score", ""))),
                 ("Corr min score", _fmt_value(corr.get("min_score"))),
                 ("Corr min matches", _fmt_value(corr.get("min_matches"))),
                 ("Positions searched", _fmt_value(corr.get("positions_searched"))),
@@ -1264,6 +1531,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     f"{search.get('attempts', 0)} tried"
                     + (" (budget hit)" if search.get("budget_exhausted") else ""),
                 ),
+                ("Frame bits used", _fmt_value(search.get("frame_bits"))),
                 ("-- FEC --", ""),
                 ("FEC candidate", str(fec.get("candidate", ""))),
                 ("FEC confidence", str(fec.get("confidence", ""))),
@@ -1284,6 +1552,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                         else "none"
                     ),
                 ),
+                ("-- GPS L1 --", ""),
+                ("GPS attempted", "yes" if gps.get("attempted") else "no"),
+                ("GPS acquired", gps_summary),
+                ("GPS C/N0 (dB-Hz)", _fmt_value(gps.get("cn0_dbhz"))),
+                ("GPS note", _fmt_value(gps.get("reason") or gps.get("nav_note"))),
                 ("-- DIAGNOSTICS --", ""),
                 ("Warnings", "; ".join(map(str, report.get("warnings", []) or []))),
                 ("Errors", "; ".join(map(str, report.get("errors", []) or []))),
@@ -1366,6 +1639,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         fmt: str | None = None,
         *,
         export: bool = True,
+        decode_max_bits: int | None = None,
+        decode_time_budget_s: float | None = None,
     ) -> list[dict]:
         """Analyse every capture in a folder and optionally export CSV + HTML.
 
@@ -1388,6 +1663,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 modulation=self._modulation_request_value(),
                 sync_word=self.sync_word_edit.text().strip(),
                 decode=bool(self.decode_check.isChecked()),
+                decode_max_bits=decode_max_bits,
+                decode_time_budget_s=decode_time_budget_s,
                 progress=lambda path, i, total: self.log(f"[{i}/{total}] {path.name}"),
             )
         except Exception as exc:
@@ -1507,6 +1784,37 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 )
         except Exception as exc:
             self.log(f"WARN: could not summarise detection: {exc}")
+
+    def _log_gps_summary(self, report: dict) -> None:
+        """One honest log line about the GPS L1 acquisition attempt.
+
+        Acquisition evidence only: the block never carries a message, so the
+        log line names SVs/Dopplers/C-N0 and says so out loud rather than
+        letting "SV12 acquired" read as "SV12 decoded".
+        """
+        try:
+            gps = (report or {}).get("gps", {}) or {}
+            if not gps.get("attempted"):
+                return
+            got = gps.get("acquired", []) or []
+            if not got:
+                self.log(
+                    "GPS L1: attempted, nothing acquired "
+                    f"({gps.get('reason') or 'no SV crossed the gate'})."
+                )
+                return
+            parts = ", ".join(
+                f"SV{e.get('sv')}@{float(e.get('doppler_hz', 0.0)):.0f}Hz"
+                for e in got
+            )
+            cn0 = gps.get("cn0_dbhz")
+            self.log(
+                f"GPS L1: acquired {len(got)} SV(s): {parts}"
+                + (f" (strongest C/N0 {cn0:.1f} dB-Hz)" if cn0 is not None else "")
+                + " -- acquisition evidence only, no nav message claimed."
+            )
+        except Exception as exc:
+            self.log(f"WARN: could not summarise GPS acquisition: {exc}")
 
     def _set_payload_badge(self, text: str, verified: bool) -> None:
         """Set the payload status badge and re-polish so the QSS property applies."""
@@ -1811,12 +2119,16 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     def _plot_waterfall(self, samples: np.ndarray, rate: float) -> None:
         try:
+            freqs: np.ndarray | None = None
+            times: np.ndarray | None = None
             try:
                 from rf_analyzer.core import dsp as _dsp
 
                 # Adaptive core DSP (handles short/long captures); GUI only
                 # caps the display size for responsiveness.
-                freqs, _times, wf = _dsp.compute_waterfall(samples, rate)
+                freqs, times, wf = _dsp.compute_waterfall(samples, rate)
+                freqs = np.asarray(freqs, dtype=float)
+                times = np.asarray(times, dtype=float)
                 wf = np.asarray(wf, dtype=float)
             except Exception:
                 # Display-only STFT fallback, capped for responsiveness.
@@ -1829,26 +2141,81 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     wf[i] = 10.0 * np.log10(
                         np.abs(np.fft.fftshift(np.fft.fft(seg))) ** 2 + 1e-12
                     )
-            # Display caps: max 256 rows x 512 cols; ImageView is refreshed
-            # via setImage every run so tabs visibly change per file/params.
+                safe_rate = float(rate) if rate and rate > 0 else 1.0
+                freqs = np.fft.fftshift(np.fft.fftfreq(nfft, d=1.0 / safe_rate)).astype(
+                    float
+                )
+                times = (np.arange(nseg, dtype=float) * step / safe_rate).astype(float)
+            # Display caps: max 256 rows x 512 cols, striding the axis
+            # vectors with the waterfall so ticks stay aligned. ImageView is
+            # refreshed via setImage every run so tabs visibly change.
+            col_step, row_step = 1, 1
             if wf.shape[1] > 512:
-                wf = wf[:, :: wf.shape[1] // 512 + 1]
+                col_step = wf.shape[1] // 512 + 1
+                wf = wf[:, ::col_step]
             if wf.shape[0] > 256:
-                wf = wf[:: wf.shape[0] // 256 + 1, :]
-            self.waterfall_view.setImage(wf.T, autoLevels=True, autoRange=True)
-            self.log(f"Waterfall: {wf.shape[0]} rows x {wf.shape[1]} cols.")
+                row_step = wf.shape[0] // 256 + 1
+                wf = wf[::row_step, :]
+            if freqs is not None:
+                freqs = np.asarray(freqs, dtype=float)[::col_step][: wf.shape[1]]
+            if times is not None:
+                times = np.asarray(times, dtype=float)[::row_step][: wf.shape[0]]
+            n_time, n_freq = int(wf.shape[0]), int(wf.shape[1])
+            f0 = float(freqs[0]) if freqs is not None and freqs.size else 0.0
+            f1 = float(freqs[-1]) if freqs is not None and freqs.size else 0.0
+            t0 = float(times[0]) if times is not None and times.size else 0.0
+            t1 = float(times[-1]) if times is not None and times.size else 0.0
+            df = (f1 - f0) / n_freq if n_freq > 1 and f1 != f0 else 1.0
+            dt = (t1 - t0) / n_time if n_time > 1 and t1 != t0 else 1.0
+            lo = float(np.nanmin(wf)) if wf.size else 0.0
+            hi = float(np.nanmax(wf)) if wf.size else 0.0
+            self.waterfall_view.setImage(
+                wf.T, pos=[f0, t0], scale=[df, dt], autoLevels=True, autoRange=True
+            )
+            try:
+                plot_item = self.waterfall_view.view
+                if hasattr(plot_item, "setLabel"):
+                    plot_item.setLabel("bottom", "Frequency", units="Hz")
+                    plot_item.setLabel("left", "Time", units="s")
+            except Exception:
+                pass
+            self.log(
+                f"Waterfall: {n_time} rows x {n_freq} cols "
+                f"({n_time} x {n_freq} bins, {lo:.1f} to {hi:.1f} dB; "
+                f"freq {f0:.0f}..{f1:.0f} Hz, time {t0:.4f}..{t1:.4f} s)."
+            )
         except Exception as exc:
             self.log(f"WARN: waterfall failed: {exc}")
+
+    def _on_show_ideal_toggled(self) -> None:
+        """Replot the constellation when the opt-in ideal overlay changes."""
+        try:
+            samples = self._display_samples
+            if samples is None or len(samples) == 0:
+                return
+            quality: dict = {}
+            try:
+                if self.last_report:
+                    quality = self.last_report.get("quality", {}) or {}
+                if not quality:
+                    quality = dict(getattr(self, "_last_const_quality", {}) or {})
+            except Exception:
+                quality = dict(getattr(self, "_last_const_quality", {}) or {})
+            self._plot_constellation(np.asarray(samples), quality=quality)
+        except Exception as exc:
+            self.log(f"WARN: ideal overlay toggle failed: {exc}")
 
     def _plot_constellation(
         self, samples: np.ndarray, quality: dict | None = None
     ) -> None:
         """I/Q scatter, annotated with the pipeline's measured EVM/MER.
 
-        The annotation only repeats what the pipeline computed; no ideal
-        reference points are drawn over the scatter. The displayed samples are
-        raw (not the pipeline's symbol decisions), so overlaying an ideal grid
-        would imply an agreement the GUI cannot actually demonstrate.
+        The scatter always shows raw received symbols (not the pipeline's
+        symbol decisions). The ideal overlay is strictly opt-in via the
+        "Show ideal reference" checkbox and reuses
+        ``core.dsp.ideal_constellation``; it is a reference only, and the
+        caption below the plot says so on both this surface and the web
+        dashboard.
         """
         self.const_plot.clear()
         view = _decimate(samples, 10_000)  # scatter stays fast
@@ -1860,6 +2227,70 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             symbolSize=3,
             symbolBrush=(34, 197, 94, 160),
         )
+        qual = dict(quality or {})
+        try:
+            self._last_const_quality = dict(qual)
+        except Exception:
+            pass
+        mode = qual.get("mode")
+        show_ideal = False
+        try:
+            show_ideal = bool(self.show_ideal_check.isChecked())
+        except Exception:
+            show_ideal = False
+        ideal_count = 0
+        has_ideal = False
+        if show_ideal and mode:
+            try:
+                from rf_analyzer.core import dsp as _dsp
+
+                ideal = _dsp.ideal_constellation(str(mode))
+                if ideal is not None and np.asarray(ideal).size:
+                    ideal = np.asarray(ideal)
+                    has_ideal = True
+                    ideal_count = int(ideal.size)
+                    self.const_plot.plot(
+                        np.real(ideal).astype(float),
+                        np.imag(ideal).astype(float),
+                        pen=None,
+                        symbol="o",
+                        symbolSize=9,
+                        symbolBrush=(0, 0, 0, 0),
+                        symbolPen=pg.mkPen("#F59E0B", width=1.5),
+                        name="ideal",
+                    )
+            except Exception as exc:
+                self.log(f"WARN: ideal overlay failed: {exc}")
+        elif mode:
+            try:
+                from rf_analyzer.core import dsp as _dsp
+
+                has_ideal = _dsp.ideal_constellation(str(mode)) is not None
+            except Exception:
+                has_ideal = False
+        try:
+            shown = int(np.asarray(view).size)
+            if has_ideal and show_ideal:
+                caption = (
+                    f"{shown} raw symbols shown (not symbol decisions); "
+                    f"{ideal_count} ideal points are reference only."
+                )
+            elif has_ideal:
+                caption = (
+                    f"{shown} raw symbols shown (not symbol decisions); "
+                    "ideal overlay off (reference only when shown)."
+                )
+            else:
+                caption = (
+                    f"{shown} raw symbols shown (not symbol decisions); "
+                    "no ideal constellation for this modulation."
+                )
+            try:
+                self.const_caption.setText(caption)
+            except Exception:
+                pass
+        except Exception:
+            pass
         try:
             qual = quality or {}
             mode = qual.get("mode")

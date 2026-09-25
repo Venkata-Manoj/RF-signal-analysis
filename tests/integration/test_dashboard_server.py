@@ -123,11 +123,21 @@ def test_analyze_bundled_capture_returns_report_and_plots(server):
     assert payload["summary"]
 
 
+# Correctness tests must not be decided by the wall-clock guard. The
+# concatenated + diagonal decode needs ~2-4 s against the shipped 4 s budget
+# (41 hypotheses), so on a loaded machine the default budget can expire before
+# the search reaches the winner and turn a passing decode into a flaky
+# failure. Same generous budget as test_coded_pipeline.GENEROUS_BUDGET; the
+# shipped defaults still apply to every other dashboard request.
+GENEROUS_DECODE_QUERY = "decode_max_bits=200000&decode_time_budget_s=120"
+
+
 def test_analyze_recovers_a_coded_message_end_to_end(server):
     _, base = server
     url = (
         f"{base}/api/analyze?name=coded_concatenated.iq&sample_rate=100000"
         "&iq_format=auto&modulation=auto&sync_word=0x1ACFFC1D&decode=1"
+        f"&{GENEROUS_DECODE_QUERY}"
     )
     _, payload = _get_json(url, timeout=180.0)
     decoded = payload["report"]["payload"]["decoded"]

@@ -1,4 +1,4 @@
-"""MVP verification: generate data → pytest → pipeline checks → PASS/FAIL.
+"""Completion verification: generate data → pytest → pipeline checks → PASS/FAIL.
 
 See info.md §23. Exits 0 and prints ``PASS`` only if no check fails; otherwise
 prints ``FAIL`` and exits 1. A check whose inputs are absent from this checkout is
@@ -142,7 +142,7 @@ def verdict_line(total: int, skipped: int) -> str:
 
 
 def check_pipeline(checks: Checks) -> None:
-    """Core MVP checks beyond pytest: BER, correlation, report schema."""
+    """Core completion checks beyond pytest: BER, correlation, report schema."""
     import numpy as np
 
     from rf_analyzer.core.demod import demod_bpsk
@@ -326,15 +326,38 @@ def check_2fsk_symbol_recovery(checks: Checks) -> None:
             }
         )
         tone_mod = tone_report.get("modulation", {})
+        tone_type = tone_mod.get("estimated_type")
+        tone_conf = float(tone_mod.get("confidence", 1.0))
+        tone_warns = tone_report.get("warnings", [])
+        # Honest outcomes: legacy uncorroborated 2-FSK (kept but capped) or the
+        # newer TONE/analog reject. Never a confident FSK claim.
+        if tone_type == "2-FSK":
+            tone_ok = (
+                tone_mod.get("corroborated") is False
+                and tone_conf <= MODULATION_UNCORROBORATED_CONFIDENCE
+                and any("uncorroborated" in w for w in tone_warns)
+            )
+        else:
+            tone_ok = tone_type in (
+                "TONE",
+                "AM",
+                "FM",
+                "AUDIO",
+                "BPSK",
+                "UNKNOWN",
+            ) and not (
+                tone_type in ("2-FSK", "4-FSK")
+                and tone_conf > MODULATION_UNCORROBORATED_CONFIDENCE
+            )
+            if tone_type in ("TONE", "AM", "FM", "AUDIO"):
+                tone_ok = tone_ok and any(
+                    ("looks like" in w) or ("uncorroborated" in w) or ("no bits" in w)
+                    for w in tone_warns
+                )
         checks.check(
-            "uncorroborated 2-FSK keeps its label but loses its confidence",
-            tone_mod.get("estimated_type") == "2-FSK"
-            and tone_mod.get("corroborated") is False
-            and float(tone_mod.get("confidence", 1.0))
-            <= MODULATION_UNCORROBORATED_CONFIDENCE
-            and any("uncorroborated" in w for w in tone_report.get("warnings", [])),
-            f"type={tone_mod.get('estimated_type')} "
-            f"conf={tone_mod.get('confidence')} "
+            "tone never reported as confident FSK (uncorroborated 2-FSK or TONE reject)",
+            tone_ok,
+            f"type={tone_type} conf={tone_mod.get('confidence')} "
             f"corroborated={tone_mod.get('corroborated')}",
         )
     else:
@@ -467,7 +490,7 @@ def check_report_schema(checks: Checks) -> None:
     Success and error reports must expose the *same* top-level shape so a
     consumer can read a field without first checking which branch produced it.
     """
-    from rf_analyzer.pipeline import analyze_file
+    from rf_analyzer.pipeline import TOP_LEVEL_KEYS, analyze_file
 
     ok = analyze_file(
         {
@@ -483,10 +506,10 @@ def check_report_schema(checks: Checks) -> None:
         "report has every §13 key", not missing, f"missing={missing or 'none'}"
     )
 
-    additive = ("payload", "display", "quality")
+    additive = ("payload", "display", "quality", "judgments")
     absent = [k for k in additive if k not in ok]
     checks.check(
-        "report has the additive blocks (payload/display/quality)",
+        "report has the additive blocks (payload, display, quality, judgments)",
         not absent,
         f"missing={absent or 'none'}",
     )
@@ -499,7 +522,8 @@ def check_report_schema(checks: Checks) -> None:
     )
     checks.check(
         "error and success reports share one top-level shape",
-        set(bad) == set(ok),
+        set(bad) == set(ok) == TOP_LEVEL_KEYS,
+        f"keys={sorted(ok)} "
         f"only_in_error={sorted(set(bad) - set(ok))} "
         f"only_in_success={sorted(set(ok) - set(bad))}",
     )
@@ -731,7 +755,7 @@ def check_real_captures(checks: Checks) -> None:
 def _require_dev_dependencies() -> None:
     """Fail with an actionable message when the test runner is not installed.
 
-    This harness is the documented way to prove the MVP works, and it runs the
+    This harness is the documented way to prove the completed system works, and it runs the
     test suite -- but the runner lives in ``requirements-dev.txt``, which is a
     separate install from the runtime ``requirements.txt``. Without this check the
     failure is a bare ``No module named pytest`` printed under a ``FAIL``, which
@@ -758,7 +782,7 @@ def _require_dev_dependencies() -> None:
 
 
 def main() -> int:
-    print("=== RF Analyzer MVP Verification ===")
+    print("=== RF Analyzer Completion Verification ===")
     _require_dev_dependencies()
 
     print("[1/5] Generating synthetic data...")
@@ -776,7 +800,7 @@ def main() -> int:
     pytest_tmp = Path(tempfile.mkdtemp(prefix="rf_verify_"))
     run_command([sys.executable, "-m", "pytest", "-q", f"--basetemp={pytest_tmp}"])
 
-    print("[3/5] Running MVP pipeline checks...")
+    print("[3/5] Running completion pipeline checks...")
     checks = Checks()
     for step, fn in (
         ("core pipeline", check_pipeline),
@@ -804,12 +828,12 @@ def main() -> int:
         # Skips are called out, because "N passed" must never quietly include a
         # group that never ran.
         print(verdict_line(checks.total, checks.skipped))
-        print("MVP verification complete.")
+        print("Completion verification complete.")
         print("PASS")
         code = 0
     else:
         print(f"{checks.total} individual checks run, at least one failed.")
-        print("MVP verification complete.")
+        print("Completion verification complete.")
         print("FAIL")
         code = 1
 

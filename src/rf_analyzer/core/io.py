@@ -17,6 +17,34 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+try:  # single source of truth lives in config; keep a fallback for odd imports
+    from rf_analyzer.config import MAX_FILE_BYTES
+except Exception:  # pragma: no cover - config is always present in practice
+    MAX_FILE_BYTES = 100 * 1024 * 1024
+
+
+class FileTooLargeError(ValueError):
+    """Raised when an input file exceeds the NFR-01 size cap."""
+
+
+def check_size(file_path: str | Path, cap: int = MAX_FILE_BYTES) -> int:
+    """Return the on-disk size, rejecting files larger than ``cap``.
+
+    Central gate for info.md NFR-01 (100 MB). Callers (``load_iq``,
+    ``load_wav``, ``detect_iq_format``, ``pipeline.analyze_file``) must call
+    this *before* any ``np.fromfile``/``sf.read`` so an oversize capture
+    becomes a graceful error report instead of a multi-hundred-MB load.
+    """
+    path = Path(file_path)
+    size = path.stat().st_size  # raises FileNotFoundError when missing
+    if size > int(cap):
+        raise FileTooLargeError(
+            f"File '{path.name}' is {size} bytes, which exceeds the "
+            f"{int(cap)} bytes (100 MB) limit (info.md NFR-01). "
+            "Split or decimate the capture and retry."
+        )
+    return int(size)
+
 
 def load_iq(
     file_path: str | Path, dtype: str = "complex64", endian: str = "little"
@@ -38,6 +66,7 @@ def load_iq(
 
     if not file_path.exists():
         raise FileNotFoundError(f"IQ file not found: {file_path}")
+    check_size(file_path)
 
     # Normalize dtype + resolve SigMF/HackRF aliases. Keep backward compat
     # with the historic exact strings ("complex64", "int16", "uint8").
@@ -103,6 +132,7 @@ def load_wav(file_path: str | Path) -> tuple[np.ndarray, float]:
 
     if not file_path.exists():
         raise FileNotFoundError(f"WAV file not found: {file_path}")
+    check_size(file_path)
 
     data, sample_rate = sf.read(str(file_path), dtype="float32")
 
@@ -255,6 +285,7 @@ def detect_iq_format(file_path: str, max_bytes: int = 2_000_000) -> dict:
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"IQ file not found: {path}")
+    check_size(path)
 
     raw = _read_preview(path, max_bytes)
     scores: dict[str, float] = {}

@@ -292,7 +292,7 @@ def test_gui_has_qam_and_sampling_est():
     if app is None:
         app = QApplication(sys.argv)
     window = MainWindow()
-    window.setWindowTitle("RF Signal Analyzer MVP")
+    window.setWindowTitle("RF Signal Analyzer")
     opts = [window.mod_combo.itemText(i) for i in range(window.mod_combo.count())]
     assert any("QAM" in o for o in opts), f"QAM not in modulation options: {opts}"
     window.close()

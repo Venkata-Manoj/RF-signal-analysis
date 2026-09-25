@@ -67,6 +67,28 @@
   .badge.warn { color: var(--warn); border-color: rgba(210,153,34,.45); background: rgba(210,153,34,.10); }
   .badge.err { color: var(--err); border-color: rgba(248,81,73,.45); background: rgba(248,81,73,.10); }
   .badge.info { color: var(--accent); border-color: rgba(88,166,255,.45); background: rgba(88,166,255,.10); }
+  /* Freshness: desktop-equivalent STALE badge + last-vs-current line.
+     Mirrors gui/main_window.py _set_stale (accent #EA580C) and
+     _update_last_analysis_label. No CDN, no extra deps. */
+  #staleBadge[hidden] { display: none; }
+  #staleBadge {
+    color: #EA580C;
+    border-color: rgba(234,88,12,.55);
+    background: rgba(234,88,12,.12);
+    font-weight: 600;
+  }
+  #paramLine {
+    max-width: 560px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10.5px;
+  }
+  button.primary.stale {
+    background: #EA580C;
+    border-color: #EA580C;
+    color: #fff;
+  }
 
   .layout {
     display: grid;
@@ -331,6 +353,8 @@
 <header class="top">
   <h1>RF Signal Analysis <span>Workbench</span></h1>
   <span class="badge info" id="modeBadge">idle</span>
+  <span class="badge" id="staleBadge" hidden>results are stale &mdash; re-run to refresh</span>
+  <span class="badge" id="paramLine" title="No run yet">Last analysis: — (no run yet)</span>
   <span class="badge" id="fileBadge">no capture loaded</span>
   <div class="spacer"></div>
   <span class="badge" id="serverBadge">checking server…</span>
@@ -377,8 +401,11 @@
           <option value="auto" selected>auto-detect</option>
           <option value="BPSK">BPSK</option>
           <option value="QPSK">QPSK</option>
+          <option value="8PSK">8PSK</option>
           <option value="2-FSK">2-FSK</option>
+          <option value="4-FSK">4-FSK</option>
           <option value="16-QAM">16-QAM</option>
+          <option value="64-QAM">64-QAM</option>
         </select>
       </label>
       <label class="field">
@@ -394,7 +421,10 @@
         <input type="number" id="frameBits" placeholder="auto" step="1" min="0">
       </label>
       <button class="primary" id="analyzeBtn" disabled>Analyze capture</button>
-      <p class="hint">Auto-detect guesses the raw IQ dtype and the modulation from the samples themselves. Pick a value explicitly if the guess looks wrong.</p>
+      <div class="btnrow" style="margin-top:8px">
+        <button id="autoAnalyzeBtn" disabled title="One-click Auto-Analyze: detect IQ format, propose a sample rate, discover a sync word, and bound the frame from the burst region. Every automatic value is labelled 'assumed' with a warning; manual fields above are left untouched.">Auto-Analyze unknown</button>
+      </div>
+      <p class="hint">Auto-detect guesses the raw IQ dtype and the modulation from the samples themselves. Pick a value explicitly if the guess looks wrong. <strong>Auto-Analyze</strong> is the one-click path for an unknown capture: it leaves these fields alone, enables automatic format/rate/sync/frame detection, and labels every assumed value in the report.</p>
     </div>
 
     <div class="panel">
@@ -433,8 +463,8 @@
           <div class="hd"><h3>Constellation</h3><span class="meta" id="constMeta"></span></div>
           <canvas id="cvConst" height="300"></canvas>
           <div class="legend">
-            <span><i style="background:#58a6ff"></i>received symbols</span>
-            <span><i style="background:#3fb950"></i>ideal points</span>
+            <span><i style="background:#58a6ff"></i>received symbols (raw)</span>
+            <span><i style="background:#3fb950"></i>ideal points (reference only)</span>
           </div>
         </div>
 
@@ -502,7 +532,7 @@
 /* ------------------------------------------------------------------ *
  * State + tiny helpers
  * ------------------------------------------------------------------ */
-const state = { captures: [], file: null, sampleName: "", payload: null, busy: false };
+const state = { captures: [], file: null, sampleName: "", payload: null, busy: false, lastRequest: null };
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -529,6 +559,126 @@ function fmtNum(value, digits) {
   const abs = Math.abs(n);
   if (abs >= 1e6 || abs < 1e-3) return n.toExponential(digits === undefined ? 3 : digits);
   return n.toFixed(digits === undefined ? 3 : digits);
+}
+
+/* ------------------------------------------------------------------ *
+ * Freshness (desktop equivalent of gui/main_window.py _last_request
+ * diffing: _request_summary / _update_last_analysis_label / _set_stale /
+ * _on_params_changed). Canvas plots are unchanged; stdlib only, no CDN.
+ * ------------------------------------------------------------------ */
+function freshnessFileKey() {
+  if (state.file) return state.file.name;
+  return state.sampleName || "";
+}
+
+function currentUIRequest() {
+  const key = freshnessFileKey();
+  if (!key) return null;
+  return {
+    file_path: key,
+    sample_rate: $("#sampleRate").value.trim(),
+    iq_format: $("#iqFormat").value,
+    modulation: $("#modulation").value,
+    sync_word: $("#syncWord").value.trim(),
+    decode: $("#decode").checked ? "True" : "False",
+    frame_bits: $("#frameBits").value.trim(),
+  };
+}
+
+function requestSummary(req) {
+  if (!req) return "\u2014";
+  const raw = String(req.file_path || "\u2014");
+  const name = raw.split(/[\\/]/).pop() || raw;
+  let base = name + "|rate=" + req.sample_rate + "|fmt=" + req.iq_format
+    + "|mod=" + req.modulation + "|sync=" + req.sync_word
+    + "|decode=" + req.decode + "|frame_bits=" + req.frame_bits;
+  const autoBits = [];
+  if (req.auto_sample_rate) autoBits.push("auto_rate=on");
+  if (req.auto_sync) autoBits.push("auto_sync=on");
+  if (autoBits.length) base += "|" + autoBits.join("|");
+  return base;
+}
+
+function updateLastAnalysisLabel() {
+  const node = $("#paramLine");
+  if (!node) return;
+  if (!state.lastRequest) {
+    node.textContent = "Last analysis: \u2014 (no run yet)";
+    node.title = "No run yet";
+    return;
+  }
+  const last = requestSummary(state.lastRequest);
+  const cur = requestSummary(currentUIRequest());
+  node.textContent = "Last analysis: " + last + " | Current UI: " + cur;
+  node.title = "Last analysis: " + last + "\nCurrent UI: " + cur;
+}
+
+function setStale(stale) {
+  const badge = $("#staleBadge");
+  if (badge) badge.hidden = !stale;
+  const btn = $("#analyzeBtn");
+  if (btn) {
+    if (stale) btn.classList.add("stale");
+    else btn.classList.remove("stale");
+    btn.title = stale
+      ? "Parameters changed \u2014 press to re-run full pipeline"
+      : "Analyze capture";
+  }
+  const autoBtn = $("#autoAnalyzeBtn");
+  if (autoBtn) {
+    autoBtn.title = stale
+      ? "Parameters changed \u2014 results are stale"
+      : autoBtn.title;
+  }
+}
+
+function onParamsChanged(sourceName) {
+  try {
+    const cur = currentUIRequest();
+    if (!cur) { updateLastAnalysisLabel(); return; }
+    if (!state.lastRequest) { updateLastAnalysisLabel(); return; }
+    const keys = ["file_path", "sample_rate", "iq_format", "modulation", "sync_word", "decode", "frame_bits"];
+    const diffs = [];
+    for (const k of keys) {
+      if (String(cur[k]) !== String(state.lastRequest[k])) {
+        diffs.push(k + ": " + state.lastRequest[k] + " -> " + cur[k]);
+      }
+    }
+    setStale(diffs.length > 0);
+    updateLastAnalysisLabel();
+  } catch (err) { /* freshness must never break analysis */ }
+}
+
+function clearPlotsWithMessage(message) {
+  const msg = message || "no valid result";
+  for (const id of ["#cvConst", "#cvPsd", "#cvEye", "#cvTime", "#cvWf", "#cvRibbon"]) {
+    const canvas = $(id);
+    if (canvas) noData(canvas, msg);
+  }
+  for (const id of ["#constMeta", "#psdMeta", "#eyeMeta", "#timeMeta", "#wfMeta", "#ribbonMeta"]) {
+    const meta = $(id);
+    if (meta) meta.textContent = msg;
+  }
+}
+
+function showErrorState(message) {
+  // Hide stale plots BEFORE rendering #issues so a failed request can
+  // never leave the previous capture's plots on screen.
+  $("#results").hidden = true;
+  clearPlotsWithMessage("no valid result");
+  $("#emptyState").hidden = false;
+  $("#emptyState").innerHTML = "";
+  const p1 = document.createElement("p");
+  p1.textContent = "No valid result \u2014 the last request failed.";
+  const p2 = document.createElement("p");
+  p2.style.fontSize = "12px";
+  p2.textContent = String(message || "request failed");
+  $("#emptyState").appendChild(p1);
+  $("#emptyState").appendChild(p2);
+  $("#dlJsonBtn").disabled = true;
+  $("#dlBitsBtn").disabled = true;
+  renderIssues({ errors: [String(message || "request failed")], warnings: [] });
+  updateLastAnalysisLabel();
 }
 
 /* ------------------------------------------------------------------ *
@@ -647,8 +797,8 @@ function drawConstellation(plot) {
       ctx.stroke();
     }
   }
-  $("#constMeta").textContent = plot.shown + " of " + I.length + " symbols shown" +
-    (plot.has_ideal === false ? " — no ideal constellation for this modulation" : "");
+  $("#constMeta").textContent = plot.shown + " of " + I.length + " raw symbols shown (not symbol decisions)" +
+    (plot.has_ideal === false ? " — no ideal constellation for this modulation" : " — ideal points are reference only");
 }
 
 function drawPsd(plot) {
@@ -1080,8 +1230,28 @@ function toQuery(extra) {
 function setBusy(busy, label) {
   state.busy = busy;
   $("#analyzeBtn").disabled = busy || !(state.file || state.sampleName);
+  $("#autoAnalyzeBtn").disabled = busy || !(state.file || state.sampleName);
   $("#batchBtn").disabled = busy;
-  setBadge($("#modeBadge"), busy ? (label || "analyzing…") : "idle", busy ? "info" : "");
+  if (busy) setBadge($("#modeBadge"), label || "analyzing…", "info");
+  // On finish the result/error badge is left intact so "analyzed" /
+  // "request failed" / "auto: N assumed" survives (previously reset to idle).
+}
+
+function freshnessRequestForRun(auto) {
+  if (auto) {
+    return {
+      file_path: freshnessFileKey(),
+      sample_rate: "",
+      iq_format: "auto",
+      modulation: "auto",
+      sync_word: "",
+      decode: "True",
+      frame_bits: "",
+      auto_sample_rate: true,
+      auto_sync: true,
+    };
+  }
+  return currentUIRequest();
 }
 
 function render(payload) {
@@ -1116,40 +1286,86 @@ function render(payload) {
 
   $("#dlJsonBtn").disabled = false;
   $("#dlBitsBtn").disabled = !((report.demodulation || {}).bits_preview || []).length;
+
+  // This run is now the fresh baseline for STALE tracking (mirror
+  // gui/main_window.py _execute_pipeline_request: _last_request = request,
+  // _set_stale(False), _update_last_analysis_label). Prefer the exact
+  // request snapshot taken before fetch so UI edits made mid-flight do
+  // not silently become the baseline.
+  try {
+    if (state.pendingRequest) {
+      state.lastRequest = Object.assign({}, state.pendingRequest);
+    } else {
+      const cur = currentUIRequest();
+      if (cur) state.lastRequest = cur;
+    }
+  } catch (err) { /* freshness must never break rendering */ }
+  state.pendingRequest = null;
+  setStale(false);
+  updateLastAnalysisLabel();
 }
 
-async function analyzeSelected() {
+async function analyzeSelected(autoArg) {
+  // Note: click listeners must wrap this as () => analyzeSelected(false/true);
+  // passing the raw handler would treat the MouseEvent as truthy `auto`.
+  const auto = autoArg === true;
   if (state.busy) return;
   if (!state.file && !state.sampleName) return;
-  setBusy(true, "analyzing…");
+  // Snapshot the exact request for freshness BEFORE fetch (mirror
+  // gui/main_window.py _last_request). render() promotes it to the baseline.
+  state.pendingRequest = freshnessRequestForRun(auto);
+  setBusy(true, auto ? "auto-analyzing…" : "analyzing…");
   try {
     let res;
     if (state.file) {
-      const q = toQuery({ name: state.file.name });
+      // `auto` deliberately drops every manual field: the server enables
+      // auto_sample_rate + auto_sync, guesses the IQ format, and bounds the
+      // frame from the burst region. Manual values are never overridden.
+      const q = auto
+        ? toQuery({ name: state.file.name, iq_format: "auto", modulation: "auto", sync_word: "", sample_rate: "", frame_bits: "", decode: "1", auto_sample_rate: "1", auto_sync: "1" })
+        : toQuery({ name: state.file.name });
       res = await fetch("/api/analyze?" + q.toString(), {
         method: "POST",
         headers: { "Content-Type": "application/octet-stream" },
         body: state.file,
       });
     } else {
-      const q = toQuery({ name: state.sampleName });
+      const q = auto
+        ? toQuery({ name: state.sampleName, iq_format: "auto", modulation: "auto", sync_word: "", sample_rate: "", frame_bits: "", decode: "1", auto_sample_rate: "1", auto_sync: "1" })
+        : toQuery({ name: state.sampleName });
       res = await fetch("/api/analyze?" + q.toString());
     }
     const payload = await res.json();
     if (!res.ok || payload.ok === false) {
+      // Hide stale plots BEFORE rendering #issues so the previous
+      // capture's plots never survive an error. _last_request stays
+      // untouched: a failed run must not become the fresh baseline.
+      state.pendingRequest = null;
       setBadge($("#modeBadge"), "request failed", "err");
-      const report = { errors: [payload.error || ("HTTP " + res.status)], warnings: [] };
-      $("#emptyState").hidden = true;
-      $("#results").hidden = false;
-      renderIssues(report);
+      showErrorState(payload.error || ("HTTP " + res.status));
       return;
     }
     render(payload);
+    if (auto) {
+      // Keep the manual fields untouched but tell the user exactly which
+      // values the automatic path assumed, so a hint is never mistaken for a
+      // measurement.
+      const inp = (payload.report || {}).input || {};
+      const assumed = [];
+      if (inp.sample_rate_assumed) assumed.push("sample rate " + fmtNum(inp.sample_rate, 0) + " Hz");
+      if (inp.iq_format_used) assumed.push("IQ format " + inp.iq_format_used);
+      const cor = (payload.report || {}).correlation || {};
+      if (cor.assumed) assumed.push("sync " + (cor.sync_word || "?"));
+      const fb = (((payload.report || {}).payload || {}).decode_search || {}).frame_bits;
+      if (fb !== null && fb !== undefined) assumed.push("frame " + fmtNum(fb, 0) + " bits");
+      if (assumed.length) {
+        setBadge($("#modeBadge"), "auto: " + assumed.length + " assumed", "warn");
+      }
+    }
   } catch (err) {
+    state.pendingRequest = null;
     setBadge($("#modeBadge"), "network error", "err");
-    $("#emptyState").hidden = true;
-    $("#results").hidden = false;
-    renderIssues({ errors: [String(err)], warnings: [] });
+    showErrorState(String((err && err.message) || err));
   } finally {
     setBusy(false);
   }
@@ -1227,7 +1443,8 @@ function download(name, text, mime) {
 }
 
 function wireEvents() {
-  $("#analyzeBtn").addEventListener("click", analyzeSelected);
+  $("#analyzeBtn").addEventListener("click", () => analyzeSelected(false));
+  $("#autoAnalyzeBtn").addEventListener("click", () => analyzeSelected(true));
   $("#batchBtn").addEventListener("click", runBatch);
 
   $("#sampleSelect").addEventListener("change", (ev) => {
@@ -1238,7 +1455,20 @@ function wireEvents() {
       ? cap.name + " — " + (cap.size_bytes / 1024).toFixed(1) + " KB, from " + cap.folder + "/"
       : "Nothing selected yet.";
     $("#analyzeBtn").disabled = !state.sampleName;
+    $("#autoAnalyzeBtn").disabled = !state.sampleName;
+    // A newly chosen file differs from any prior run -> mark STALE
+    // (mirror gui/main_window.py open_file).
+    onParamsChanged("sampleSelect");
   });
+
+  // Desktop _on_params_changed equivalent: any manual-field edit diffs
+  // against _last_request and flags STALE. Never touches DSP logic.
+  for (const sel of ["#sampleRate", "#iqFormat", "#modulation", "#syncWord", "#decode", "#frameBits"]) {
+    const node = $(sel);
+    if (!node) continue;
+    node.addEventListener("input", () => onParamsChanged(sel));
+    node.addEventListener("change", () => onParamsChanged(sel));
+  }
 
   const drop = $("#dropZone");
   const input = $("#fileInput");
@@ -1288,7 +1518,9 @@ function acceptFile(file) {
   $("#sampleSelect").value = "";
   $("#fileHint").textContent = file.name + " — " + (file.size / 1024).toFixed(1) + " KB (uploaded)";
   $("#analyzeBtn").disabled = false;
+  $("#autoAnalyzeBtn").disabled = false;
   setBadge($("#fileBadge"), file.name, "info");
+  onParamsChanged("file");
 }
 
 function applyQueryParams() {
@@ -1336,6 +1568,8 @@ async function boot() {
     }
 
     // Deep link: ?name=<capture>&auto=1 reproduces a full analysis.
+    // NOTE: `auto` here means "run on load" with the current UI fields,
+    // not the Auto-Analyze path (which would discard manual fields).
     const wanted = new URLSearchParams(window.location.search).get("name");
     if (wanted && state.captures.some((c) => c.name === wanted)) {
       state.sampleName = wanted;
@@ -1343,7 +1577,9 @@ async function boot() {
       const cap = state.captures.find((c) => c.name === wanted);
       $("#fileHint").textContent = cap.name + " — " + (cap.size_bytes / 1024).toFixed(1) + " KB, from " + cap.folder + "/";
       $("#analyzeBtn").disabled = false;
-      if (autoRun) await analyzeSelected();
+      $("#autoAnalyzeBtn").disabled = false;
+      updateLastAnalysisLabel();
+      if (autoRun) await analyzeSelected(false);
     }
   } catch (err) {
     setBadge($("#serverBadge"), "server unreachable", "err");
